@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "semlens"
+version = "0.1.0"
+description = "Interpretable Semantic Change Analysis via Definition-Aligned Embedding Spaces"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Roksana Goworek"},
+]
+
+dependencies = [
+    "torch>=2.0",
+    "torchvision>=0.15",
+    "transformers>=4.30",
+    "scikit-learn>=1.3",
+    "scipy>=1.10",
+    "numpy>=1.24",
+    "pandas>=2.0",
+]
+
+[project.optional-dependencies]
+umap = ["umap-learn>=0.5"]
+app = [
+    "streamlit>=1.36",
+    "plotly>=5.18",
+    "requests",
+    "umap-learn>=0.5",
+]
+dev = [
+    "pytest",
+    "umap-learn>=0.5",
+]
+all = [
+    "streamlit>=1.36",
+    "plotly>=5.18",
+    "requests",
+    "umap-learn>=0.5",
+    "pytest",
+]
+
+[tool.setuptools.packages.find]
+include = ["semlens*"]
