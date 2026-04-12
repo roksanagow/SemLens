@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import streamlit as st
 
+from app.annotation_store import reset_annotation_state
+
 
 # Keys and their default values
 _DEFAULTS = {
@@ -27,10 +29,6 @@ _DEFAULTS = {
     "palette_name": "Tab10 (matplotlib)",
     "reduction_method": "pca",
 
-    # Annotation
-    "annotations": {},              # {point_index: sense_label}
-    "sense_classes": [],            # ordered list of class names
-    "active_sense_class": "",       # currently selected class for annotation
 }
 
 
@@ -53,19 +51,18 @@ def reset_downstream_of(stage: str):
             "embedded_usages", "embeddings_source",
             "definitions_raw", "definitions_formatted",
             "definition_embeddings", "def_space_all",
-            "annotations", "sense_classes", "active_sense_class",
         ],
         "embeddings": [
             "embedded_usages",
             "definition_embeddings", "def_space_all",
-            "annotations", "sense_classes", "active_sense_class",
         ],
         "definitions": [
             "definition_embeddings", "def_space_all",
         ],
-        "annotation": [
-            "annotations", "sense_classes", "active_sense_class",
-        ],
+        "annotation": [],
     }
     for key in stages.get(stage, []):
         st.session_state[key] = _DEFAULTS.get(key)
+
+    if stage in {"data", "embeddings", "annotation"}:
+        reset_annotation_state()

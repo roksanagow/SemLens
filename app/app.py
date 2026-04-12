@@ -44,7 +44,149 @@ from semlens.spaces import project_to_definition_space
 from semlens.utils import get_palette, palette_names
 
 from app.state import init_state, reset_downstream_of
+from app.annotation_store import (
+    add_sense_class,
+    clear_annotations,
+    get_active_sense_class,
+    get_annotations,
+    get_sense_classes,
+    remove_annotation,
+    remove_sense_class,
+    set_active_sense_class,
+    set_annotation,
+)
 from app.components.scatter import render_lda_weights_chart, render_scatter
+
+
+PROJECTION_HELP = (
+    "PCA: linear, fast, global structure. "
+    "UMAP: non-linear, preserves neighborhoods/clusters. "
+    "t-SNE: non-linear, strongest local grouping, slower."
+)
+
+LDA_HELP = (
+    "LDA view uses LD1 (best separating direction between corpora) and "
+    "PC1 of residual variance for the second axis."
+)
+
+METRIC_HELP = {
+    "apd": "APD: average cross-corpus pairwise distance. Higher means stronger shift.",
+    "prt": "PRT: distance between corpus centroids (prototype shift).",
+    "amd": "AMD: symmetric nearest-neighbor mismatch between corpora.",
+    "samd": "SAMD: one-to-one greedy matching distance; robust to density imbalance.",
+    "dir_1": "Directional AMD from first corpus to second; high suggests narrowing/disappearance.",
+    "dir_2": "Directional AMD from second corpus to first; high suggests broadening/emergence.",
+}
+
+_USAGE_CAP_SAMPLE_SEED = 42
+
+
+def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
+    hex_color = hex_color.lstrip("#")
+    return (
+        int(hex_color[0:2], 16),
+        int(hex_color[2:4], 16),
+        int(hex_color[4:6], 16),
+    )
+
+
+def _rgb_to_hex(rgb: tuple[int, int, int]) -> str:
+    return "#" + "".join(f"{component:02x}" for component in rgb)
+
+
+def _blend_with_white(hex_color: str, strength: float) -> str:
+    strength = max(0.0, min(1.0, float(strength)))
+    base_r, base_g, base_b = _hex_to_rgb(hex_color)
+    red = int(round(255 * (1 - strength) + base_r * strength))
+    green = int(round(255 * (1 - strength) + base_g * strength))
+    blue = int(round(255 * (1 - strength) + base_b * strength))
+    return _rgb_to_hex((red, green, blue))
+
+
+def _column_gradient_styles(series: pd.Series, base_color: str) -> list[str]:
+    values = pd.to_numeric(series, errors="coerce")
+    valid = values.dropna()
+    if valid.empty:
+        return [""] * len(series)
+
+    min_value = float(valid.min())
+    max_value = float(valid.max())
+
+    if min_value == max_value:
+        strengths = pd.Series([0.75] * len(series), index=series.index)
+    else:
+        strengths = (values - min_value) / (max_value - min_value)
+
+    styles: list[str] = []
+    for strength in strengths:
+        if pd.isna(strength):
+            styles.append("")
+        else:
+            color = _blend_with_white(base_color, 0.18 + 0.82 * float(strength))
+            styles.append(f"background-color: {color}; color: #111111;")
+    return styles
+
+
+def _cap_usages_by_corpus(
+    data: TargetWordData,
+    cap_by_corpus: dict[str, int],
+) -> tuple[TargetWordData, list[int]]:
+    """Cap usages per corpus via deterministic random sampling.
+
+    A cap <= 0 means no cap for that corpus.
+    Returns filtered data and kept original indices.
+    """
+    rng = np.random.default_rng(_USAGE_CAP_SAMPLE_SEED)
+    kept_indices: list[int] = []
+
+    for corpus, cap_value in cap_by_corpus.items():
+        cap = int(cap_value)
+        corpus_indices = data.indices_for_corpus(corpus)
+        if cap <= 0 or cap >= len(corpus_indices):
+            kept_indices.extend(corpus_indices)
+            continue
+
+        sampled = np.array(corpus_indices, dtype=int)
+        rng.shuffle(sampled)
+        kept_indices.extend(sorted(sampled[:cap].tolist()))
+
+    if not cap_by_corpus:
+        kept_indices = list(range(len(data.usages)))
+    else:
+        selected = set(kept_indices)
+        for idx, usage in enumerate(data.usages):
+            if usage.corpus not in cap_by_corpus and idx not in selected:
+                kept_indices.append(idx)
+
+    kept_indices = sorted(set(kept_indices))
+    kept_usages = [data.usages[idx] for idx in kept_indices]
+    return TargetWordData(word=data.word, usages=kept_usages), kept_indices
+
+
+def _stable_annotation_coords(
+    cache_key: str,
+    n_points: int,
+    compute_coords,
+) -> np.ndarray:
+    """Return cached annotation coordinates for deterministic selection behavior."""
+    cache = st.session_state.get("_annot_coords_cache")
+    if not isinstance(cache, dict):
+        cache = {}
+        st.session_state["_annot_coords_cache"] = cache
+    cached = cache.get(cache_key)
+
+    if (
+        cached is not None
+        and isinstance(cached, np.ndarray)
+        and cached.shape[0] == n_points
+        and cached.shape[1] == 2
+    ):
+        return cached
+
+    coords = np.asarray(compute_coords(), dtype=float)
+    coords = np.nan_to_num(coords, nan=0.0, posinf=0.0, neginf=0.0)
+    cache[cache_key] = coords
+    return coords
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -87,6 +229,7 @@ with st.sidebar:
         "2D projection method",
         available_methods(),
         index=0,
+        help=PROJECTION_HELP,
     )
 
     st.divider()
@@ -128,6 +271,7 @@ with tab_data:
         "Input format",
         ["Paste sentences", "Upload CSV / TSV", "Upload raw corpora (.txt)", "Upload pre-computed embeddings"],
         horizontal=True,
+        help="Pick how to provide usages: sentence text, structured table, raw corpora, or pre-computed vectors.",
     )
 
     if input_mode == "Paste sentences":
@@ -136,7 +280,7 @@ with tab_data:
             "The tool will auto-detect the target word's position."
         )
         col_word, col_c1name, col_c2name = st.columns(3)
-        word = col_word.text_input("Target word", value=st.session_state.target_word)
+        word = col_word.text_input("Target word", value=st.session_state.target_word) or ""
         c1_name = col_c1name.text_input("Corpus 1 name", value="corpus_1")
         c2_name = col_c2name.text_input("Corpus 2 name", value="corpus_2")
 
@@ -152,6 +296,24 @@ with tab_data:
             placeholder="One sentence per line...",
         )
 
+        cap_col1, cap_col2 = st.columns(2)
+        cap_c1 = int(cap_col1.number_input(
+            f"Max usages from {c1_name}",
+            min_value=0,
+            value=0,
+            step=1,
+            key="paste_cap_c1",
+            help="0 means no cap. Randomly samples from the provided sentences if cap is exceeded.",
+        ))
+        cap_c2 = int(cap_col2.number_input(
+            f"Max usages from {c2_name}",
+            min_value=0,
+            value=0,
+            step=1,
+            key="paste_cap_c2",
+            help="0 means no cap. Randomly samples from the provided sentences if cap is exceeded.",
+        ))
+
         if st.button("Load data", type="primary", key="load_paste"):
             if not word.strip():
                 st.error("Please enter a target word.")
@@ -165,6 +327,7 @@ with tab_data:
                         all_sents = sents_1 + sents_2
                         all_labels = [c1_name] * len(sents_1) + [c2_name] * len(sents_2)
                         data = load_from_sentences(all_sents, word.strip(), all_labels)
+                        data, _ = _cap_usages_by_corpus(data, {c1_name: cap_c1, c2_name: cap_c2})
                         reset_downstream_of("data")
                         st.session_state.target_word = word.strip()
                         st.session_state.target_word_data = data
@@ -178,8 +341,29 @@ with tab_data:
             "Upload a file with columns: **sentence**, **corpus** (required); "
             "**start**, **end** (optional character positions)."
         )
-        uploaded = st.file_uploader("Choose CSV or TSV", type=["csv", "tsv", "txt"])
-        word = st.text_input("Target word", value=st.session_state.target_word, key="csv_word")
+        uploaded = st.file_uploader(
+            "Choose CSV or TSV",
+            type=["csv", "tsv", "txt"],
+            help="Required columns: sentence, corpus. Optional: start/end character offsets for the target word.",
+        )
+        word = st.text_input("Target word", value=st.session_state.target_word, key="csv_word") or ""
+        cap_col1, cap_col2 = st.columns(2)
+        cap_csv_1 = int(cap_col1.number_input(
+            "Max usages from corpus 1",
+            min_value=0,
+            value=0,
+            step=1,
+            key="csv_cap_1",
+            help="Applied to the first corpus label found in the file (sorted order). 0 means no cap. Randomly samples from the provided sentences if cap is exceeded.",
+        ))
+        cap_csv_2 = int(cap_col2.number_input(
+            "Max usages from corpus 2",
+            min_value=0,
+            value=0,
+            step=1,
+            key="csv_cap_2",
+            help="Applied to the second corpus label found in the file (sorted order). 0 means no cap. Randomly samples from the provided sentences if cap is exceeded.",
+        ))
 
         if uploaded and st.button("Load data", type="primary", key="load_csv"):
             if not word.strip():
@@ -191,6 +375,13 @@ with tab_data:
                     tmp = Path(f"/tmp/semlens_upload{suffix}")
                     tmp.write_bytes(uploaded.read())
                     data = load_from_csv(tmp, word.strip())
+                    labels = data.corpus_labels
+                    cap_map = {}
+                    if labels:
+                        cap_map[labels[0]] = cap_csv_1
+                    if len(labels) > 1:
+                        cap_map[labels[1]] = cap_csv_2
+                    data, _ = _cap_usages_by_corpus(data, cap_map)
                     reset_downstream_of("data")
                     st.session_state.target_word = word.strip()
                     st.session_state.target_word_data = data
@@ -205,13 +396,40 @@ with tab_data:
             "into sentences (on full stops) and extract only those containing "
             "an exact match of the target word."
         )
-        word = st.text_input("Target word", value=st.session_state.target_word, key="corpus_word")
+        word = st.text_input("Target word", value=st.session_state.target_word, key="corpus_word") or ""
         col_c1name, col_c2name = st.columns(2)
         c1_name = col_c1name.text_input("Corpus 1 name", value="corpus_1", key="corpus_c1name")
         c2_name = col_c2name.text_input("Corpus 2 name", value="corpus_2", key="corpus_c2name")
         col1, col2 = st.columns(2)
-        c1_file = col1.file_uploader(f"**{c1_name}** (.txt)", type=["txt"], key="corpus1_upload")
-        c2_file = col2.file_uploader(f"**{c2_name}** (.txt)", type=["txt"], key="corpus2_upload")
+        c1_file = col1.file_uploader(
+            f"**{c1_name}** (.txt)",
+            type=["txt"],
+            key="corpus1_upload",
+            help="Plain text only. Sentences are extracted by full-stop splitting.",
+        )
+        c2_file = col2.file_uploader(
+            f"**{c2_name}** (.txt)",
+            type=["txt"],
+            key="corpus2_upload",
+            help="Plain text only. Sentences are extracted by full-stop splitting.",
+        )
+        cap_col1, cap_col2 = st.columns(2)
+        cap_c1 = int(cap_col1.number_input(
+            f"Max usages from {c1_name}",
+            min_value=0,
+            value=0,
+            step=1,
+            key="raw_cap_c1",
+            help="0 means no cap. Randomly samples from the provided sentences if cap is exceeded.",
+        ))
+        cap_c2 = int(cap_col2.number_input(
+            f"Max usages from {c2_name}",
+            min_value=0,
+            value=0,
+            step=1,
+            key="raw_cap_c2",
+            help="0 means no cap. Randomly samples from the provided sentences if cap is exceeded.",
+        ))
 
         if c1_file and c2_file and st.button("Load data", type="primary", key="load_corpus"):
             if not word.strip():
@@ -224,6 +442,7 @@ with tab_data:
                         {c1_name: c1_text, c2_name: c2_text},
                         word.strip(),
                     )
+                    data, _ = _cap_usages_by_corpus(data, {c1_name: cap_c1, c2_name: cap_c2})
                     reset_downstream_of("data")
                     st.session_state.target_word = word.strip()
                     st.session_state.target_word_data = data
@@ -242,9 +461,35 @@ with tab_data:
             "Upload a `.pt` (PyTorch) or `.npy` (NumPy) file with shape `[N, D]`, "
             "**plus** a CSV/TSV with the sentence metadata (same row order)."
         )
-        emb_file = st.file_uploader("Embeddings file (.pt or .npy)", type=["pt", "npy"])
-        meta_file = st.file_uploader("Metadata CSV/TSV", type=["csv", "tsv", "txt"], key="meta_upload")
-        word = st.text_input("Target word", value=st.session_state.target_word, key="precomp_word")
+        emb_file = st.file_uploader(
+            "Embeddings file (.pt or .npy)",
+            type=["pt", "npy"],
+            help="Array/tensor shape must be [N, D]. N must match the number of metadata rows.",
+        )
+        meta_file = st.file_uploader(
+            "Metadata CSV/TSV",
+            type=["csv", "tsv", "txt"],
+            key="meta_upload",
+            help="Same row order as embeddings. Required columns: sentence, corpus.",
+        )
+        word = st.text_input("Target word", value=st.session_state.target_word, key="precomp_word") or ""
+        cap_col1, cap_col2 = st.columns(2)
+        cap_pre_1 = int(cap_col1.number_input(
+            "Max usages from corpus 1",
+            min_value=0,
+            value=0,
+            step=1,
+            key="precomp_cap_1",
+            help="Applied to the first corpus label found in metadata (sorted order). 0 means no cap. Randomly samples from the provided sentences if cap is exceeded.",
+        ))
+        cap_pre_2 = int(cap_col2.number_input(
+            "Max usages from corpus 2",
+            min_value=0,
+            value=0,
+            step=1,
+            key="precomp_cap_2",
+            help="Applied to the second corpus label found in metadata (sorted order). 0 means no cap. Randomly samples from the provided sentences if cap is exceeded.",
+        ))
 
         if emb_file and meta_file and st.button("Load data", type="primary", key="load_precomp"):
             if not word.strip():
@@ -262,6 +507,14 @@ with tab_data:
                     meta_path = Path(f"/tmp/semlens_meta{meta_suffix}")
                     meta_path.write_bytes(meta_file.read())
                     data = load_from_csv(meta_path, word.strip())
+                    labels = data.corpus_labels
+                    cap_map = {}
+                    if labels:
+                        cap_map[labels[0]] = cap_pre_1
+                    if len(labels) > 1:
+                        cap_map[labels[1]] = cap_pre_2
+                    data, kept_indices = _cap_usages_by_corpus(data, cap_map)
+                    embs = embs[kept_indices]
 
                     eu = embedded_usages_from_precomputed(data, embs)
                     reset_downstream_of("data")
@@ -349,6 +602,7 @@ with tab_full:
             ["Dimensionality reduction", "LDA (LD1 + PC1)"],
             horizontal=True,
             key="full_view_mode",
+            help=LDA_HELP,
         )
 
         # --- Compute metrics ---
@@ -361,18 +615,18 @@ with tab_full:
         with col_metrics:
             st.subheader("Metrics")
             st.markdown("*Computed on full-dimensional embeddings*")
-            st.metric("APD", f"{metrics['apd']:.4f}")
-            st.metric("PRT", f"{metrics['prt']:.4f}")
-            st.metric("AMD", f"{metrics['amd']:.4f}")
-            st.metric("SAMD", f"{metrics['samd']:.4f}")
+            st.metric("APD", f"{metrics['apd']:.4f}", help=METRIC_HELP["apd"])
+            st.metric("PRT", f"{metrics['prt']:.4f}", help=METRIC_HELP["prt"])
+            st.metric("AMD", f"{metrics['amd']:.4f}", help=METRIC_HELP["amd"])
+            st.metric("SAMD", f"{metrics['samd']:.4f}", help=METRIC_HELP["samd"])
             st.divider()
             st.markdown("**Directional AMD**")
             d_key1 = f"amd_{c1}_to_{c2}"
             d_key2 = f"amd_{c2}_to_{c1}"
             st.metric(f"{c1} → {c2}", f"{metrics[d_key1]:.4f}",
-                       help="High = senses in earlier corpus not found in later (narrowing)")
+                       help=METRIC_HELP["dir_1"])
             st.metric(f"{c2} → {c1}", f"{metrics[d_key2]:.4f}",
-                       help="High = senses in later corpus not found in earlier (broadening)")
+                       help=METRIC_HELP["dir_2"])
 
         with col_plot:
             if view_mode == "Dimensionality reduction":
@@ -385,8 +639,6 @@ with tab_full:
                     data.corpus_list,
                     data.sentences,
                     data.word,
-                    annotations=st.session_state.annotations,
-                    sense_classes=st.session_state.sense_classes,
                     palette_name=st.session_state.palette_name,
                     title=f"Full space — {st.session_state.reduction_method.upper()}",
                     axis_labels=(
@@ -402,8 +654,6 @@ with tab_full:
                     data.corpus_list,
                     data.sentences,
                     data.word,
-                    annotations=st.session_state.annotations,
-                    sense_classes=st.session_state.sense_classes,
                     palette_name=st.session_state.palette_name,
                     title="Full space — LDA",
                     axis_labels=("LD1", "PC1 (residual)"),
@@ -529,9 +779,10 @@ with tab_defs:
         else:
             view_mode_def = st.radio(
                 "Visualisation",
-                ["Dimensionality reduction", "LDA (LD1 + PC1)"],
+                ["Dimensionality reduction", "LDA (LD1 + PC1)", "Definition axes (X/Y)"],
                 horizontal=True,
                 key="def_view_mode",
+                help=LDA_HELP,
             )
 
             show_anchors = st.checkbox("Show definition anchors", value=False, key="show_def_anchors")
@@ -572,16 +823,16 @@ with tab_defs:
 
             with col_metrics_d:
                 st.subheader("Metrics (def space)")
-                st.metric("APD", f"{def_metrics['apd']:.4f}")
-                st.metric("PRT", f"{def_metrics['prt']:.4f}")
-                st.metric("AMD", f"{def_metrics['amd']:.4f}")
-                st.metric("SAMD", f"{def_metrics['samd']:.4f}")
+                st.metric("APD", f"{def_metrics['apd']:.4f}", help=METRIC_HELP["apd"])
+                st.metric("PRT", f"{def_metrics['prt']:.4f}", help=METRIC_HELP["prt"])
+                st.metric("AMD", f"{def_metrics['amd']:.4f}", help=METRIC_HELP["amd"])
+                st.metric("SAMD", f"{def_metrics['samd']:.4f}", help=METRIC_HELP["samd"])
                 st.divider()
                 st.markdown("**Directional AMD**")
                 dk1 = f"amd_{c1}_to_{c2}"
                 dk2 = f"amd_{c2}_to_{c1}"
-                st.metric(f"{c1} → {c2}", f"{def_metrics[dk1]:.4f}")
-                st.metric(f"{c2} → {c1}", f"{def_metrics[dk2]:.4f}")
+                st.metric(f"{c1} → {c2}", f"{def_metrics[dk1]:.4f}", help=METRIC_HELP["dir_1"])
+                st.metric(f"{c2} → {c1}", f"{def_metrics[dk2]:.4f}", help=METRIC_HELP["dir_2"])
 
             with col_plot_d:
                 # Nearest definition per point (for hover)
@@ -613,8 +864,6 @@ with tab_defs:
                         data.corpus_list,
                         data.sentences,
                         data.word,
-                        annotations=st.session_state.annotations,
-                        sense_classes=st.session_state.sense_classes,
                         palette_name=st.session_state.palette_name,
                         title=f"Definition space — {st.session_state.reduction_method.upper()}",
                         axis_labels=(
@@ -628,7 +877,7 @@ with tab_defs:
                         highlight_indices=highlight_indices,
                         key="def_scatter",
                     )
-                else:  # LDA
+                elif view_mode_def == "LDA (LD1 + PC1)":
                     lda_result = lda_projection(
                         def_space,
                         data.corpus_list,
@@ -649,8 +898,6 @@ with tab_defs:
                         data.corpus_list,
                         data.sentences,
                         data.word,
-                        annotations=st.session_state.annotations,
-                        sense_classes=st.session_state.sense_classes,
                         palette_name=st.session_state.palette_name,
                         title="Definition space — LDA",
                         axis_labels=("LD1", "PC1 (residual)"),
@@ -669,6 +916,48 @@ with tab_defs:
                         weights_df,
                         palette_name=st.session_state.palette_name,
                         corpus_labels=(c1, c2),
+                    )
+                else:
+                    col_x_def, col_y_def = st.columns(2)
+                    x_def = col_x_def.selectbox(
+                        "X-axis definition",
+                        def_labels_clean,
+                        index=0,
+                        key="def_axis_x",
+                    )
+                    y_def = col_y_def.selectbox(
+                        "Y-axis definition",
+                        def_labels_clean,
+                        index=1 if len(def_labels_clean) > 1 else 0,
+                        key="def_axis_y",
+                    )
+
+                    x_idx = def_labels_clean.index(x_def)
+                    y_idx = def_labels_clean.index(y_def)
+                    usage_coords = def_space[:, [x_idx, y_idx]].detach().cpu().numpy()
+
+                    anchor_coords_direct = None
+                    anchor_labels_direct = None
+                    if show_anchors and st.session_state.definition_embeddings is not None:
+                        def_embs = st.session_state.definition_embeddings
+                        anchor_in_def_space = project_to_definition_space(def_embs, def_embs)
+                        anchor_coords_direct = anchor_in_def_space[:, [x_idx, y_idx]].detach().cpu().numpy()
+                        anchor_labels_direct = def_labels_clean
+
+                    render_scatter(
+                        usage_coords,
+                        data.corpus_list,
+                        data.sentences,
+                        data.word,
+                        palette_name=st.session_state.palette_name,
+                        title="Definition space — Direct axes",
+                        axis_labels=(x_def, y_def),
+                        definition_labels_per_point=nearest_def_labels,
+                        definition_anchor_coords=anchor_coords_direct,
+                        definition_anchor_labels=anchor_labels_direct,
+                        show_definition_anchors=show_anchors,
+                        highlight_indices=highlight_indices,
+                        key="def_axes_scatter",
                     )
 
             # --- Per-definition metrics table ---
@@ -692,9 +981,19 @@ with tab_defs:
             # Format for display
             display_df = per_def_df.drop(columns=["dim"], errors="ignore")
             numeric_cols = display_df.select_dtypes(include="number").columns
+            styler = display_df.style.format({c: "{:.4f}" for c in numeric_cols})
+
+            gradient_cmaps = ["#1f77b4", "#2ca02c", "#ff7f0e", "#9467bd", "#d62728", "#17a2b8", "#e377c2"]
+            for i, col_name in enumerate(numeric_cols):
+                styler = styler.apply(
+                    lambda col, color=gradient_cmaps[i % len(gradient_cmaps)]: _column_gradient_styles(col, color),
+                    axis=0,
+                    subset=[col_name],
+                )
+
             st.dataframe(
-                display_df.style.format({c: "{:.4f}" for c in numeric_cols}),
-                use_container_width=True,
+                styler,
+                width='stretch',
                 height=min(400, 35 * len(display_df) + 40),
             )
 
@@ -706,13 +1005,39 @@ with tab_defs:
 with tab_annot:
     st.header("Sense Annotation")
 
+    st.markdown(
+        """
+        <style>
+        /* Make selected class buttons (secondary variant) look clearly lit. */
+        div[data-testid="stButton"] > button[kind="secondary"],
+        button[data-testid="stBaseButton-secondary"] {
+            background-color: #ffffff !important;
+            color: #111111 !important;
+            border: 1px solid #d6d6d6 !important;
+        }
+        div[data-testid="stButton"] > button[kind="secondary"]:hover,
+        button[data-testid="stBaseButton-secondary"]:hover {
+            background-color: #f7f7f7 !important;
+            color: #000000 !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     eu = st.session_state.embedded_usages
     if eu is None:
         st.info("Load data and compute embeddings first.")
     else:
         data = st.session_state.target_word_data
-        annotations = st.session_state.annotations
-        sense_classes = st.session_state.sense_classes
+        annotations = get_annotations()
+        sense_classes = get_sense_classes()
+        active_class = get_active_sense_class()
+
+        if sense_classes and active_class not in sense_classes:
+            repaired_class = sense_classes[0]
+            set_active_sense_class(repaired_class)
+            active_class = repaired_class
 
         # --- Class management (top bar) ---
         st.markdown(
@@ -724,25 +1049,36 @@ with tab_annot:
         col_new, col_active = st.columns([1, 1])
 
         with col_new:
-            new_col1, new_col2 = st.columns([3, 1])
-            new_class = new_col1.text_input("New sense class name", key="new_class_input",
-                                             label_visibility="collapsed",
-                                             placeholder="Type a new sense class name...")
-            if new_col2.button("Add class", key="add_class_btn", use_container_width=True):
+            with st.form("add_class_form", clear_on_submit=False):
+                new_col1, new_col2 = st.columns([3, 1])
+                new_class = new_col1.text_input(
+                    "New sense class name",
+                    key="new_class_input",
+                    label_visibility="collapsed",
+                    placeholder="Type a new sense class name...",
+                )
+                submitted = new_col2.form_submit_button(
+                    "Add class",
+                    width='stretch',
+                    type="tertiary",
+                )
+            if submitted:
                 if new_class.strip() and new_class.strip() not in sense_classes:
-                    st.session_state.sense_classes.append(new_class.strip())
-                    st.session_state.active_sense_class = new_class.strip()
+                    created_class = new_class.strip()
+                    add_sense_class(created_class)
+                    set_active_sense_class(created_class)
                     st.rerun()
 
         with col_active:
             if sense_classes:
-                st.session_state.active_sense_class = st.selectbox(
+                selected_class = st.selectbox(
                     "Active annotation class",
                     sense_classes,
-                    index=sense_classes.index(st.session_state.active_sense_class)
-                        if st.session_state.active_sense_class in sense_classes else 0,
-                    key="active_class_select",
+                    index=sense_classes.index(active_class)
+                        if active_class in sense_classes else 0,
                 )
+                set_active_sense_class(selected_class)
+                active_class = selected_class
             else:
                 st.caption("Create a sense class to start annotating.")
 
@@ -753,39 +1089,60 @@ with tab_annot:
             for i, sc in enumerate(sense_classes):
                 count = sum(1 for v in annotations.values() if v == sc)
                 colour = sense_palette[i % len(sense_palette)]
-                is_active = sc == st.session_state.active_sense_class
-                border = f"3px solid {colour}" if is_active else f"1px solid #ddd"
+                is_active = sc == active_class
                 with class_cols[i % len(class_cols)]:
-                    st.markdown(
-                        f'<div style="border:{border}; border-radius:8px; padding:8px; '
-                        f'margin-bottom:4px; text-align:center;">'
-                        f'<span style="color:{colour}; font-weight:bold;">⬤</span> '
-                        f'{sc} ({count})</div>',
+                    dot_col, btn_col = st.columns([1, 6])
+                    dot_col.markdown(
+                        f'<div style="text-align:center; color:{colour}; font-size:18px; line-height:30px;">⬤</div>',
                         unsafe_allow_html=True,
                     )
-                    if st.button("Remove", key=f"rm_{sc}", use_container_width=True):
-                        st.session_state.sense_classes.remove(sc)
-                        st.session_state.annotations = {
-                            k: v for k, v in annotations.items() if v != sc
-                        }
-                        if st.session_state.active_sense_class == sc:
-                            st.session_state.active_sense_class = (
-                                st.session_state.sense_classes[0]
-                                if st.session_state.sense_classes else ""
-                            )
+                    if btn_col.button(
+                        f"{sc} ({count})",
+                        key=f"activate_{sc}",
+                        width='stretch',
+                        type="secondary" if is_active else "tertiary",
+                    ):
+                        set_active_sense_class(sc)
+                        st.rerun()
+                    if st.button("Remove", key=f"rm_{sc}", width='stretch', type="tertiary"):
+                        remove_sense_class(sc)
                         st.rerun()
 
             n_unassigned = len(data) - len(annotations)
             st.caption(f"Unassigned: {n_unassigned} / {len(data)}")
 
+        col_clear_btn, col_clear_msg = st.columns([1, 3])
+        with col_clear_btn:
+            if st.button("Delete all annotations", key="clear_all_annots_btn", width='stretch', type="tertiary"):
+                st.session_state.confirm_clear_annotations = True
+        with col_clear_msg:
+            if st.session_state.get("confirm_clear_annotations", False):
+                st.warning("Delete all annotations? This cannot be undone in the current session.")
+                col_confirm, col_cancel = st.columns(2)
+                if col_confirm.button("Confirm delete", key="confirm_clear_annots", width='stretch'):
+                    clear_annotations()
+                    st.session_state.confirm_clear_annotations = False
+                    st.rerun()
+                if col_cancel.button("Cancel", key="cancel_clear_annots", width='stretch'):
+                    st.session_state.confirm_clear_annotations = False
+                    st.rerun()
+
         st.divider()
 
         # --- View switching ---
         has_def_space = st.session_state.def_space_all is not None
+        def_labels_clean = [
+            d.split(": ", 1)[-1] if ": " in d else d
+            for d in st.session_state.definitions_formatted
+        ]
 
         annot_view_options = ["Full space — dim. reduction", "Full space — LDA"]
         if has_def_space:
-            annot_view_options += ["Definition space — dim. reduction", "Definition space — LDA"]
+            annot_view_options += [
+                "Definition space — dim. reduction",
+                "Definition space — LDA",
+                "Definition space — definition axes",
+            ]
 
         annot_view = st.radio(
             "Annotation view",
@@ -796,39 +1153,95 @@ with tab_annot:
 
         # --- Compute coordinates for the selected view ---
         if annot_view == "Full space — dim. reduction":
-            coords = reduce_to_2d(eu.embeddings, method=st.session_state.reduction_method)
+            coords = _stable_annotation_coords(
+                cache_key=(
+                    f"full_reduced::{st.session_state.reduction_method}::"
+                    f"{data.word}::{len(data)}"
+                ),
+                n_points=len(data),
+                compute_coords=lambda: reduce_to_2d(
+                    eu.embeddings,
+                    method=st.session_state.reduction_method,
+                ),
+            )
             ax_labels = (
                 f"{st.session_state.reduction_method.upper()} 1",
                 f"{st.session_state.reduction_method.upper()} 2",
             )
             view_title = f"Annotation — Full space {st.session_state.reduction_method.upper()}"
+            chart_key_suffix = f"full_reduced_{st.session_state.reduction_method}"
         elif annot_view == "Full space — LDA":
-            lda_res = lda_projection(eu.embeddings, data.corpus_list)
-            coords = lda_res.coords_2d
+            coords = _stable_annotation_coords(
+                cache_key=f"full_lda::{data.word}::{len(data)}",
+                n_points=len(data),
+                compute_coords=lambda: lda_projection(eu.embeddings, data.corpus_list).coords_2d,
+            )
             ax_labels = ("LD1", "PC1 (residual)")
             view_title = "Annotation — Full space LDA"
+            chart_key_suffix = "full_lda"
         elif annot_view == "Definition space — dim. reduction":
-            coords = reduce_to_2d(
-                st.session_state.def_space_all,
-                method=st.session_state.reduction_method,
+            coords = _stable_annotation_coords(
+                cache_key=(
+                    f"def_reduced::{st.session_state.reduction_method}::"
+                    f"{data.word}::{len(data)}"
+                ),
+                n_points=len(data),
+                compute_coords=lambda: reduce_to_2d(
+                    st.session_state.def_space_all,
+                    method=st.session_state.reduction_method,
+                ),
             )
             ax_labels = (
                 f"{st.session_state.reduction_method.upper()} 1",
                 f"{st.session_state.reduction_method.upper()} 2",
             )
             view_title = f"Annotation — Def space {st.session_state.reduction_method.upper()}"
+            chart_key_suffix = f"def_reduced_{st.session_state.reduction_method}"
         elif annot_view == "Definition space — LDA":
-            lda_res = lda_projection(st.session_state.def_space_all, data.corpus_list)
-            coords = lda_res.coords_2d
+            coords = _stable_annotation_coords(
+                cache_key=f"def_lda::{data.word}::{len(data)}",
+                n_points=len(data),
+                compute_coords=lambda: lda_projection(
+                    st.session_state.def_space_all,
+                    data.corpus_list,
+                ).coords_2d,
+            )
             ax_labels = ("LD1", "PC1 (residual)")
             view_title = "Annotation — Def space LDA"
+            chart_key_suffix = "def_lda"
+        elif annot_view == "Definition space — definition axes":
+            col_x_def, col_y_def = st.columns(2)
+            x_def = col_x_def.selectbox(
+                "X-axis definition",
+                def_labels_clean,
+                index=0,
+                key="annot_axis_x",
+            )
+            y_def = col_y_def.selectbox(
+                "Y-axis definition",
+                def_labels_clean,
+                index=1 if len(def_labels_clean) > 1 else 0,
+                key="annot_axis_y",
+            )
+            x_idx = def_labels_clean.index(x_def)
+            y_idx = def_labels_clean.index(y_def)
+            coords = _stable_annotation_coords(
+                cache_key=f"def_axes::{x_idx}:{y_idx}::{data.word}::{len(data)}",
+                n_points=len(data),
+                compute_coords=lambda: st.session_state.def_space_all[:, [x_idx, y_idx]].detach().cpu().numpy(),
+            )
+            ax_labels = (x_def, y_def)
+            view_title = "Annotation — Def space direct axes"
+            chart_key_suffix = f"def_axes_{x_idx}_{y_idx}"
         else:
             coords = reduce_to_2d(eu.embeddings, method="pca")
             ax_labels = ("PC1", "PC2")
             view_title = "Annotation"
+            chart_key_suffix = "fallback"
+
+        chart_key = f"annot_chart_{chart_key_suffix}"
 
         # --- Scatter plot ---
-        annot_key = f"annot_{annot_view.replace(' ', '_').replace('—', '').lower()}"
         result = render_scatter(
             coords,
             data.corpus_list,
@@ -840,25 +1253,25 @@ with tab_annot:
             title=view_title,
             axis_labels=ax_labels,
             enable_selection=True,
-            key=annot_key,
+            key=chart_key,
         )
 
         st.caption("Use the **lasso** tool (top-right of plot) to select points.")
 
         # --- Handle selection: assign clicked points to active class ---
         selected_indices = result.get("clicked_points", [])
-        active_class = st.session_state.active_sense_class
+        active_class = get_active_sense_class()
 
         if selected_indices and active_class:
             changed = False
             for idx in selected_indices:
                 if annotations.get(idx) == active_class:
                     # Toggle off: un-assign if already this class
-                    st.session_state.annotations.pop(idx, None)
+                    remove_annotation(idx)
                     changed = True
                 else:
                     # Assign to active class
-                    st.session_state.annotations[idx] = active_class
+                    set_annotation(idx, active_class)
                     changed = True
             if changed:
                 st.rerun()
@@ -879,7 +1292,7 @@ with tab_annot:
                         col_sent, col_rm = st.columns([5, 1])
                         col_sent.caption(f"[{u.corpus}] {u.sentence}")
                         if col_rm.button("✕", key=f"rm_annot_{idx}"):
-                            st.session_state.annotations.pop(idx, None)
+                            remove_annotation(idx)
                             st.rerun()
 
         # --- Export ---
@@ -900,7 +1313,7 @@ with tab_annot:
                 })
             export_df = pd.DataFrame(rows)
 
-            st.dataframe(export_df, use_container_width=True, height=200)
+            st.dataframe(export_df, width='stretch', height=200)
 
             csv_data = export_df.to_csv(index=False)
             st.download_button(
