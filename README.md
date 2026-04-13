@@ -45,7 +45,7 @@ So instead of asking only “do these corpora differ?”, you can ask “which s
 ## Installation
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/semlens.git
+git clone https://github.com/roksanagow/semlens.git
 cd semlens
 
 # Create and activate a virtual environment
