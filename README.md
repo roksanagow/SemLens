@@ -1,4 +1,4 @@
-# SemLens 🔍
+# SemLens 
 
 **Interactive lexical semantic change detection for comparing words across time, domains, or corpora.**
 
