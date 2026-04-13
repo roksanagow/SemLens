@@ -7,7 +7,7 @@ Implements the four metrics from Goworek & Dubossarsky (2026):
 - **AMD** — Average Minimum Distance (with directional decomposition)
 - **SAMD** — Symmetric Average Minimum Distance (greedy one-to-one matching)
 
-All metrics use cosine distance: δ(x, y) = 1 − cos(x, y).
+All metrics can use cosine distance or Euclidean distance.
 """
 
 from __future__ import annotations
@@ -22,33 +22,51 @@ from torch import Tensor
 # Individual metric functions
 # ---------------------------------------------------------------------------
 
-def calculate_apd(embs_1: Tensor, embs_2: Tensor) -> float:
+def _pairwise_distance(embs_1: Tensor, embs_2: Tensor, distance: str = "cosine") -> Tensor:
+    """Return pairwise distances between rows of two embedding matrices."""
+    if distance == "cosine":
+        e1 = torch.nn.functional.normalize(embs_1, dim=1)
+        e2 = torch.nn.functional.normalize(embs_2, dim=1)
+        return 1.0 - torch.mm(e1, e2.T)
+    if distance == "euclidean":
+        return torch.cdist(embs_1, embs_2)
+    raise ValueError(f"Unsupported distance metric: {distance}")
+
+def calculate_apd(embs_1: Tensor, embs_2: Tensor, distance: str = "cosine") -> float:
     """Average Pairwise Distance between all cross-corpus usage pairs.
 
     APD(A, B) = (1 / |A||B|) Σ_{a∈A} Σ_{b∈B} δ(a, b)
     """
-    e1 = torch.nn.functional.normalize(embs_1, dim=1)
-    e2 = torch.nn.functional.normalize(embs_2, dim=1)
-    pairwise_dist = 1.0 - torch.mm(e1, e2.T)  # [N1, N2]
+    pairwise_dist = _pairwise_distance(embs_1, embs_2, distance=distance)  # [N1, N2]
     return pairwise_dist.mean().item()
 
 
-def calculate_prt(embs_1: Tensor, embs_2: Tensor, eps: float = 1e-8) -> float:
-    """Prototype Distance — cosine distance between corpus centroids.
+def calculate_prt(
+    embs_1: Tensor,
+    embs_2: Tensor,
+    eps: float = 1e-8,
+    distance: str = "cosine",
+) -> float:
+    """Prototype Distance between corpus centroids.
 
     PRT(A, B) = δ(μ(A), μ(B))
     """
     c1 = embs_1.mean(dim=0)
     c2 = embs_2.mean(dim=0)
-    c1 = c1 / (c1.norm() + eps)
-    c2 = c2 / (c2.norm() + eps)
-    cos_sim = torch.dot(c1, c2).clamp(-1.0, 1.0)
-    return (1.0 - cos_sim).item()
+    if distance == "cosine":
+        c1 = c1 / (c1.norm() + eps)
+        c2 = c2 / (c2.norm() + eps)
+        cos_sim = torch.dot(c1, c2).clamp(-1.0, 1.0)
+        return (1.0 - cos_sim).item()
+    if distance == "euclidean":
+        return torch.norm(c1 - c2, p=2).item()
+    raise ValueError(f"Unsupported distance metric: {distance}")
 
 
 def calculate_directional_amd(
     embs_from: Tensor,
     embs_to: Tensor,
+    distance: str = "cosine",
 ) -> float:
     """Directional AMD: average nearest-neighbour distance from one corpus to another.
 
@@ -57,24 +75,25 @@ def calculate_directional_amd(
     High AMD(A→B) = usages in A that cannot be matched in B
     (sense disappearance / narrowing if A is the earlier corpus).
     """
-    dists = torch.cdist(embs_from, embs_to)  # [N_from, N_to]
+    dists = _pairwise_distance(embs_from, embs_to, distance=distance)  # [N_from, N_to]
     min_dists = dists.min(dim=1).values  # [N_from]
     return min_dists.mean().item()
 
 
-def calculate_amd(embs_1: Tensor, embs_2: Tensor) -> float:
+def calculate_amd(embs_1: Tensor, embs_2: Tensor, distance: str = "cosine") -> float:
     """Symmetric AMD — average of both directional AMDs.
 
     AMD(A, B) = (AMD(A→B) + AMD(B→A)) / 2
     """
-    d1 = calculate_directional_amd(embs_1, embs_2)
-    d2 = calculate_directional_amd(embs_2, embs_1)
+    d1 = calculate_directional_amd(embs_1, embs_2, distance=distance)
+    d2 = calculate_directional_amd(embs_2, embs_1, distance=distance)
     return (d1 + d2) / 2
 
 
 def calculate_samd(
     embs_1: Tensor,
     embs_2: Tensor,
+    distance: str = "cosine",
 ) -> float:
     """Symmetric Average Minimum Distance via greedy one-to-one matching.
 
@@ -89,7 +108,7 @@ def calculate_samd(
     if n1 == 0 or n2 == 0:
         return float("nan")
 
-    dist = torch.cdist(embs_1, embs_2)  # [n1, n2]
+    dist = _pairwise_distance(embs_1, embs_2, distance=distance)  # [n1, n2]
 
     used1 = torch.zeros(n1, dtype=torch.bool)
     used2 = torch.zeros(n2, dtype=torch.bool)
@@ -128,6 +147,7 @@ def compute_all_metrics(
     embs_c1: Tensor,
     embs_c2: Tensor,
     corpus_labels: tuple[str, str] = ("corpus_1", "corpus_2"),
+    distance: str = "cosine",
 ) -> dict[str, float]:
     """Compute all LSCD metrics between two corpora.
 
@@ -146,12 +166,12 @@ def compute_all_metrics(
     """
     c1_name, c2_name = corpus_labels
     return {
-        "apd": calculate_apd(embs_c1, embs_c2),
-        "prt": calculate_prt(embs_c1, embs_c2),
-        "amd": calculate_amd(embs_c1, embs_c2),
-        "samd": calculate_samd(embs_c1, embs_c2),
-        f"amd_{c1_name}_to_{c2_name}": calculate_directional_amd(embs_c1, embs_c2),
-        f"amd_{c2_name}_to_{c1_name}": calculate_directional_amd(embs_c2, embs_c1),
+        "apd": calculate_apd(embs_c1, embs_c2, distance=distance),
+        "prt": calculate_prt(embs_c1, embs_c2, distance=distance),
+        "amd": calculate_amd(embs_c1, embs_c2, distance=distance),
+        "samd": calculate_samd(embs_c1, embs_c2, distance=distance),
+        f"amd_{c1_name}_to_{c2_name}": calculate_directional_amd(embs_c1, embs_c2, distance=distance),
+        f"amd_{c2_name}_to_{c1_name}": calculate_directional_amd(embs_c2, embs_c1, distance=distance),
     }
 
 
@@ -165,6 +185,7 @@ def compute_per_definition_metrics(
     definition_labels: list[str],
     corpus_labels: tuple[str, str] = ("corpus_1", "corpus_2"),
     sort_by: str = "amd",
+    distance: str = "cosine",
 ) -> pd.DataFrame:
     """Compute LSCD metrics along each definition dimension independently.
 
@@ -202,10 +223,10 @@ def compute_per_definition_metrics(
         record = {
             "definition": definition_labels[k],
             "dim": k,
-            "amd": calculate_amd(col_c1, col_c2),
-            "samd": calculate_samd(col_c1, col_c2),
-            f"amd_{c1_name}_to_{c2_name}": calculate_directional_amd(col_c1, col_c2),
-            f"amd_{c2_name}_to_{c1_name}": calculate_directional_amd(col_c2, col_c1),
+            "amd": calculate_amd(col_c1, col_c2, distance=distance),
+            "samd": calculate_samd(col_c1, col_c2, distance=distance),
+            f"amd_{c1_name}_to_{c2_name}": calculate_directional_amd(col_c1, col_c2, distance=distance),
+            f"amd_{c2_name}_to_{c1_name}": calculate_directional_amd(col_c2, col_c1, distance=distance),
             # Average cosine distance from each corpus's usages to this definition.
             # Small value = usages in that corpus are semantically close to this sense.
             f"avg_cos_dist_{c1_name}": col_c1.mean().item(),

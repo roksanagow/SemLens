@@ -28,6 +28,7 @@ _DEFAULTS = {
     # Display settings
     "palette_name": "Tab10 (matplotlib)",
     "reduction_method": "pca",
+    "distance_metric": "cosine",
 
 }
 

@@ -13,6 +13,7 @@ Use it for:
 ## What SemLens Does
 
 - Computes common **lexical semantic change detection (LSCD)** metrics: APD, PRT, AMD, SAMD, and directional AMD
+- Lets you choose a global **metric distance** (cosine or Euclidean) for APD, PRT, AMD, and SAMD
 - Visualises usages in a 2D scatter plot using PCA, UMAP, t-SNE, or LDA
 - Builds a **definition-aligned space** so dictionary senses become explicit axes
 - Lets you annotate usages into sense classes and export them
@@ -33,6 +34,7 @@ So instead of asking only “do these corpora differ?”, you can ask “which s
 ## Main Features
 
 - **LSCD metrics**: APD, PRT, AMD, SAMD, and directional AMD for asymmetric change detection
+- **Distance control**: choose cosine or Euclidean distance globally from the sidebar for metric computation
 - **Definition-space projection**: project usages onto dictionary definitions for an interpretable sense space
 - **Interactive 2D plots**: hover to inspect sentences, colour by corpus, and switch between PCA / UMAP / t-SNE
 - **LDA views**: separate corpora with LD1 and inspect interpretable definition weights
@@ -130,6 +132,19 @@ then every usage is compared against both definitions. The result is a new space
 
 This makes it easier to understand *what kind* of change is happening, not just *whether* change is happening.
 
+### Interpreting LDA Definition Weights in Definition Space
+
+Definition-space dimensions are **distances** to each definition (cosine distance by construction):
+
+- larger value = farther from that definition (less associated)
+- smaller value = closer to that definition (more associated)
+
+So LDA definition weights are currently weights over **distance features**.
+If a definition has a positive LD1 weight, larger distance to that definition pushes a usage toward the second corpus side of LD1.
+If it has a negative LD1 weight, larger distance pushes toward the first corpus side.
+
+Practical reading tip: combine **weight sign** with each corpus's average definition distance in the per-definition table to decide which corpus is actually closer to that sense.
+
 ## Typical Workflow
 
 1. Load two corpora you want to compare.
@@ -191,11 +206,16 @@ def_space = project_to_definition_space(embedded.embeddings, def_embs)
 | Metric | Description |
 |--------|-------------|
 | **APD** | Average Pairwise Distance — global distributional divergence |
-| **PRT** | Prototype Distance — cosine distance between corpus centroids |
+| **PRT** | Prototype Distance — distance between corpus centroids |
 | **AMD** | Average Minimum Distance — local correspondence between usages |
 | **SAMD** | Symmetric AMD — greedy one-to-one matching between corpora |
 | **AMD(C1→C2)** | Directional: high = senses in C1 not found in C2 (narrowing) |
 | **AMD(C2→C1)** | Directional: high = senses in C2 not found in C1 (broadening) |
+
+All metric panels use the sidebar **Metric distance** selector:
+
+- cosine
+- euclidean
 
 ## Citation
 

@@ -232,6 +232,13 @@ with st.sidebar:
         help=PROJECTION_HELP,
     )
 
+    st.session_state.distance_metric = st.selectbox(
+        "Metric distance",
+        ["cosine", "euclidean"],
+        index=0 if st.session_state.distance_metric == "cosine" else 1,
+        help="Used for APD, PRT, AMD, and SAMD in all metric panels.",
+    )
+
     st.divider()
 
     # Status summary
@@ -608,7 +615,12 @@ with tab_full:
         # --- Compute metrics ---
         embs_c1 = eu.get_corpus_embeddings(c1)
         embs_c2 = eu.get_corpus_embeddings(c2)
-        metrics = compute_all_metrics(embs_c1, embs_c2, (c1, c2))
+        metrics = compute_all_metrics(
+            embs_c1,
+            embs_c2,
+            (c1, c2),
+            distance=st.session_state.distance_metric,
+        )
 
         col_plot, col_metrics = st.columns([3, 1])
 
@@ -817,7 +829,12 @@ with tab_defs:
             idx_c2 = eu.get_corpus_indices(c2)
             def_c1 = def_space[idx_c1]
             def_c2 = def_space[idx_c2]
-            def_metrics = compute_all_metrics(def_c1, def_c2, (c1, c2))
+            def_metrics = compute_all_metrics(
+                def_c1,
+                def_c2,
+                (c1, c2),
+                distance=st.session_state.distance_metric,
+            )
 
             col_plot_d, col_metrics_d = st.columns([3, 1])
 
@@ -977,6 +994,7 @@ with tab_defs:
                 def_c1, def_c2, def_labels_clean,
                 corpus_labels=(c1, c2),
                 sort_by=sort_col,
+                distance=st.session_state.distance_metric,
             )
             # Format for display
             display_df = per_def_df.drop(columns=["dim"], errors="ignore")
