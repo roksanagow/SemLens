@@ -192,7 +192,7 @@ def _build_figure_multi_trace(
 
 def _build_figure_single_trace(
     coords_2d, corpus_per_point, hover_texts, unique_corpora, corpus_colour_map,
-    annotations, sense_classes,
+    annotations, sense_classes, interaction_mode,
 ):
     """Build figure with ONE trace containing all points (for annotation charts).
 
@@ -203,6 +203,26 @@ def _build_figure_single_trace(
 
     n = len(corpus_per_point)
     all_indices = list(range(n))
+
+    # In click mode, add a larger transparent hit area so users can select
+    # points without needing pixel-perfect clicks on tiny markers.
+    if interaction_mode == "click":
+        fig.add_trace(go.Scatter(
+            x=coords_2d[:, 0].tolist(),
+            y=coords_2d[:, 1].tolist(),
+            mode="markers",
+            name="_hit_area",
+            text=hover_texts,
+            hoverinfo="text",
+            customdata=all_indices,
+            marker=dict(
+                size=22,
+                color="rgba(0,0,0,0.001)",
+                opacity=1.0,
+                line=dict(width=0, color="rgba(0,0,0,0)"),
+            ),
+            showlegend=False,
+        ))
 
     # Per-point colours based on corpus
     colours = [corpus_colour_map[c] for c in corpus_per_point]
@@ -288,6 +308,7 @@ def render_scatter(
     show_definition_anchors: bool = False,
     highlight_indices: list[int] | None = None,
     enable_selection: bool = False,
+    interaction_mode: str = "lasso",
     key: str = "scatter",
 ) -> dict:
     """Render an interactive Plotly scatter plot in Streamlit.
@@ -315,7 +336,7 @@ def render_scatter(
     if enable_selection:
         fig = _build_figure_single_trace(
             coords_2d, corpus_per_point, hover_texts, unique_corpora, corpus_colour_map,
-            annotations, sense_classes,
+            annotations, sense_classes, interaction_mode,
         )
     else:
         fig = _build_figure_multi_trace(
@@ -335,7 +356,10 @@ def render_scatter(
     )
 
     if enable_selection:
-        fig.update_layout(dragmode="lasso")
+        if interaction_mode == "click":
+            fig.update_layout(dragmode="pan", clickmode="event+select")
+        else:
+            fig.update_layout(dragmode="lasso", clickmode="event+select")
 
     # --- Render ---
     if not enable_selection:
@@ -347,7 +371,7 @@ def render_scatter(
         width='stretch',
         key=key,
         on_select="rerun",
-        selection_mode=("lasso",),
+        selection_mode=("points",) if interaction_mode == "click" else ("lasso",),
     )
 
     # --- Parse selection ---

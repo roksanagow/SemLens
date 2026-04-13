@@ -1151,6 +1151,14 @@ with tab_annot:
             key="annot_view_mode",
         )
 
+        annot_interaction_mode = st.radio(
+            "Annotation interaction",
+            ["Click", "Lasso"],
+            horizontal=True,
+            key="annot_interaction_mode",
+            help="Click: single-point assignment. Lasso: free-form multi-point assignment.",
+        )
+
         # --- Compute coordinates for the selected view ---
         if annot_view == "Full space — dim. reduction":
             coords = _stable_annotation_coords(
@@ -1253,10 +1261,14 @@ with tab_annot:
             title=view_title,
             axis_labels=ax_labels,
             enable_selection=True,
+            interaction_mode=annot_interaction_mode.lower(),
             key=chart_key,
         )
 
-        st.caption("Use the **lasso** tool (top-right of plot) to select points.")
+        if annot_interaction_mode == "Click":
+            st.caption("Click a point to assign/unassign it to the active class.")
+        else:
+            st.caption("Use the **lasso** tool to select multiple points and assign/unassign them at once.")
 
         # --- Handle selection: assign clicked points to active class ---
         selected_indices = result.get("clicked_points", [])

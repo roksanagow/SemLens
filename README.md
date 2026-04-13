@@ -37,7 +37,7 @@ So instead of asking only “do these corpora differ?”, you can ask “which s
 - **Interactive 2D plots**: hover to inspect sentences, colour by corpus, and switch between PCA / UMAP / t-SNE
 - **LDA views**: separate corpora with LD1 and inspect interpretable definition weights
 - **Per-definition metrics**: see which senses contribute most to the change
-- **Sense annotation**: create sense classes, lasso-select usages, and export annotations
+- **Sense annotation**: create sense classes, annotate with click or lasso, and export annotations
 - **Wiktionary support**: fetch definitions automatically via the MediaWiki API
 - **Flexible input**: paste sentences, upload CSV/TSV, upload raw text, or load pre-computed embeddings
 - **Accessible palettes**: colourblind-friendly palette options
@@ -105,7 +105,17 @@ In the **Definitions & Def Space** tab, either:
 
 ### 6. Export annotations
 
-In the **Annotation** tab, create sense classes, assign usages with lasso selection, and download the annotated CSV.
+In the **Annotation** tab, create sense classes, assign usages with click or lasso selection, and download the annotated CSV.
+
+### Annotation Tips
+
+- Choose an **Annotation interaction** mode:
+    - **Click** for single-point annotation
+    - **Lasso** for free-form multi-point annotation
+- In click mode, selection is forgiving: you can click near a point (within the hover area), not only the exact marker center.
+- Click a class button to make it active.
+- Press **Enter** in the class-name box to add a new class quickly.
+- New classes become active automatically when created.
 
 ## How Definition Projection Works
 
