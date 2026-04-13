@@ -1,20 +1,46 @@
 # SemLens 🔍
 
-**An Interactive Tool for Interpretable Semantic Change Analysis via Definition-Aligned Embedding Spaces**
+**Interactive lexical semantic change detection for comparing words across time, domains, or corpora.**
 
-SemLens is a Python library and Streamlit web application for visualising and quantifying lexical semantic change using contextualised embeddings, dictionary-informed definition spaces, and the four LSCD metrics from [Goworek & Dubossarsky (2026)](https://aclanthology.org/2026.lchange-1.13.pdf).
+SemLens helps you inspect how the meaning of a target word shifts between two corpora. It combines contextual embeddings, dictionary definitions, interpretable projections, and semantic change metrics so you can move from a raw distributional comparison to a sense-level explanation.
 
-## Features
+Use it for:
 
-- **Four LSCD metrics**: APD, PRT, AMD, SAMD — plus directional AMD for asymmetric change detection (sense broadening vs. narrowing)
-- **Definition-space projection**: project usage embeddings onto dictionary definitions to create an interpretable low-dimensional semantic space
-- **Interactive 2D scatter plots**: hover to read sentences, colour-coded by corpus, with PCA / UMAP / t-SNE projection
-- **LDA visualisation**: Linear Discriminant Analysis to find the axis maximally separating corpora, with interpretable definition weights
-- **Per-definition metric breakdown**: see which dictionary senses drive the biggest distributional shift
-- **Sense annotation**: click-to-annotate usages into named sense classes and export annotated datasets
-- **Wiktionary integration**: fetch definitions automatically via the MediaWiki API (multilingual)
-- **Flexible input**: paste sentences, upload CSV/TSV, or load pre-computed embeddings
-- **Colourblind-friendly**: multiple accessible colour palettes (Wong, Tol Bright, IBM Design, etc.)
+- **Diachronic semantic change**: compare earlier vs. later language
+- **Cross-domain shift**: compare the same word across genres, registers, or subject domains
+- **Corpus comparison**: compare any two datasets where the same word appears in different contexts
+
+## What SemLens Does
+
+- Computes common **lexical semantic change detection (LSCD)** metrics: APD, PRT, AMD, SAMD, and directional AMD
+- Visualises usages in a 2D scatter plot using PCA, UMAP, t-SNE, or LDA
+- Builds a **definition-aligned space** so dictionary senses become explicit axes
+- Lets you annotate usages into sense classes and export them
+- Supports manual definitions, Wiktionary definitions, or JSON input
+
+## Why Definition Projection Matters
+
+The most intuitive embedding plot is not always the most useful one. In a normal 2D reduction, the axes are mathematical constructs and can be hard to interpret. SemLens also offers **definition projection**, which turns each dictionary definition into a semantic axis.
+
+In practice, this means:
+
+- each usage is scored by how close it is to each definition
+- each dimension corresponds to one dictionary sense or gloss
+- you can inspect which sense axes separate your corpora most strongly
+
+So instead of asking only “do these corpora differ?”, you can ask “which sense is expanding, shrinking, or disappearing?”
+
+## Main Features
+
+- **LSCD metrics**: APD, PRT, AMD, SAMD, and directional AMD for asymmetric change detection
+- **Definition-space projection**: project usages onto dictionary definitions for an interpretable sense space
+- **Interactive 2D plots**: hover to inspect sentences, colour by corpus, and switch between PCA / UMAP / t-SNE
+- **LDA views**: separate corpora with LD1 and inspect interpretable definition weights
+- **Per-definition metrics**: see which senses contribute most to the change
+- **Sense annotation**: create sense classes, lasso-select usages, and export annotations
+- **Wiktionary support**: fetch definitions automatically via the MediaWiki API
+- **Flexible input**: paste sentences, upload CSV/TSV, upload raw text, or load pre-computed embeddings
+- **Accessible palettes**: colourblind-friendly palette options
 
 ## Installation
 
@@ -40,42 +66,99 @@ pip install -e ".[all]"
 
 ## Quick Start
 
-### Web application
+### 1. Launch the web app
 
 ```bash
-source .venv/bin/activate        # if not already active
+source .venv/bin/activate
 streamlit run app/app.py
 ```
 
-Then open the URL shown in your terminal (typically `http://localhost:8501`).
+Open the URL shown in the terminal, usually `http://localhost:8501`.
 
-### As a Python library
+### 2. Load your data
+
+In the **Data & Model** tab, choose one of the following:
+
+- paste sentences directly
+- upload a CSV/TSV file
+- upload raw text files
+- load pre-computed embeddings plus metadata
+
+### 3. Embed usages
+
+Choose a model or enter a Hugging Face model ID, then embed the usages.
+
+### 4. Add definitions
+
+In the **Definitions & Def Space** tab, either:
+
+- type definitions manually
+- fetch them from Wiktionary
+- load them from JSON
+
+### 5. Explore the change
+
+- inspect the full embedding space
+- compare LSCD metrics
+- switch to definition space to see which senses explain the change
+- annotate usages into sense classes and export the results
+
+### 6. Export annotations
+
+In the **Annotation** tab, create sense classes, assign usages with lasso selection, and download the annotated CSV.
+
+## How Definition Projection Works
+
+Definition projection is the key idea behind SemLens.
+
+If a word has definitions such as:
+
+- a financial institution
+- the side of a river
+
+then every usage is compared against both definitions. The result is a new space where each axis corresponds to one definition. A point near the “financial institution” axis is semantically closer to that sense; a point near the “river bank” axis is closer to that sense.
+
+This makes it easier to understand *what kind* of change is happening, not just *whether* change is happening.
+
+## Typical Workflow
+
+1. Load two corpora you want to compare.
+2. Embed the target word usages.
+3. Compute LSCD metrics.
+4. Add definitions for the target word.
+5. Inspect the definition-aligned plot.
+6. Annotate the usages into sense classes.
+7. Export your annotations if you want to use them elsewhere.
+
+## Programmatic Use
+
+SemLens can also be used as a Python library.
 
 ```python
 from semlens.data_loading import load_from_sentences
 from semlens.embeddings import load_model, embed_usages
 from semlens.metrics import compute_all_metrics
-from semlens.spaces import project_to_definition_space
 from semlens.definitions import format_definitions, embed_definitions
+from semlens.spaces import project_to_definition_space
 
-# 1. Load data
+# Load usages
 data = load_from_sentences(
-    sentences=["I deposited money at the bank", "The river bank was muddy", ...],
+    sentences=["I deposited money at the bank", "The river bank was muddy"],
     word="bank",
-    corpus_labels=["modern", "modern", "old", ...],
+    corpus_labels=["modern", "modern"],
 )
 
-# 2. Embed usages
+# Embed usages
 model = load_model("xl-lexeme")
 embedded = embed_usages(model, data)
 
-# 3. Compute metrics
-embs_old = embedded.get_corpus_embeddings("old")
-embs_new = embedded.get_corpus_embeddings("modern")
-metrics = compute_all_metrics(embs_old, embs_new, ("old", "modern"))
-print(metrics)
+# Compare corpora
+metrics = compute_all_metrics(
+    embedded.get_corpus_embeddings("modern"),
+    embedded.get_corpus_embeddings("modern"),
+)
 
-# 4. Definition space (optional)
+# Build definition space
 defs = format_definitions("bank", [
     "a financial institution",
     "the side of a river or lake",
@@ -90,7 +173,8 @@ def_space = project_to_definition_space(embedded.embeddings, def_embs)
 |--------|-------------|
 | **Paste sentences** | One sentence per line, grouped by corpus |
 | **CSV / TSV** | Columns: `sentence`, `corpus` (required); `start`, `end` (optional positions) |
-| **Pre-computed embeddings** | `.pt` or `.npy` file + metadata CSV (same row order) |
+| **Raw text files** | One plain-text file per corpus; sentences are extracted automatically |
+| **Pre-computed embeddings** | `.pt` or `.npy` file + metadata CSV/TSV (same row order) |
 
 ## Metrics
 
