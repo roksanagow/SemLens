@@ -39,6 +39,7 @@ So instead of asking only “do these corpora differ?”, you can ask “which s
 - **Interactive 2D plots**: hover to inspect sentences, colour by corpus, and switch between PCA / UMAP / t-SNE
 - **LDA views**: separate corpora with LD1 and inspect interpretable definition weights
 - **Per-definition metrics**: see which senses contribute most to the change
+- **Definition diagnostics heatmaps**: inspect definition-definition similarity and cross-definition correlation in collapsible panels
 - **Sense annotation**: create sense classes, annotate with click or lasso, and export annotations
 - **Wiktionary support**: fetch definitions automatically via the MediaWiki API
 - **Flexible input**: paste sentences, upload CSV/TSV, upload raw text, or load pre-computed embeddings

@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 import torch
 
@@ -187,6 +188,85 @@ def _stable_annotation_coords(
     coords = np.nan_to_num(coords, nan=0.0, posinf=0.0, neginf=0.0)
     cache[cache_key] = coords
     return coords
+
+
+def _get_cached_model(model_id: str):
+    """Reuse a previously loaded model if the model ID is unchanged."""
+    cached_model_id = st.session_state.get("_loaded_model_id")
+    cached_model = st.session_state.get("_loaded_model")
+    if cached_model is not None and cached_model_id == model_id:
+        return cached_model
+
+    loaded = load_model(model_id, device="cpu")
+    st.session_state["_loaded_model_id"] = model_id
+    st.session_state["_loaded_model"] = loaded
+    return loaded
+
+
+def _shorten_label(label: str, max_len: int = 42) -> str:
+    if len(label) <= max_len:
+        return label
+    return label[: max_len - 3] + "..."
+
+
+def _render_square_heatmap(
+    matrix: np.ndarray,
+    labels: list[str],
+    title: str,
+    *,
+    colorscale: str = "RdBu",
+    colorbar_title: str = "value",
+    ignore_diagonal_for_scale: bool = False,
+):
+    """Render a square matrix heatmap with shared row/column labels."""
+    display_labels = [_shorten_label(lbl) for lbl in labels]
+    matrix_np = np.asarray(matrix, dtype=float)
+    n = len(labels)
+    hover_customdata = np.empty((n, n, 2), dtype=object)
+    for row_i, y_label in enumerate(labels):
+        for col_j, x_label in enumerate(labels):
+            hover_customdata[row_i, col_j, 0] = x_label
+            hover_customdata[row_i, col_j, 1] = y_label
+
+    zmin = None
+    zmax = None
+    if ignore_diagonal_for_scale and n > 1:
+        off_diag_mask = ~np.eye(n, dtype=bool)
+        off_diag_values = matrix_np[off_diag_mask]
+        off_diag_values = off_diag_values[np.isfinite(off_diag_values)]
+        if off_diag_values.size > 0:
+            min_val = float(np.min(off_diag_values))
+            max_val = float(np.max(off_diag_values))
+            if min_val < max_val:
+                zmin = min_val
+                zmax = max_val
+
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=matrix_np,
+            x=display_labels,
+            y=display_labels,
+            customdata=hover_customdata,
+            colorscale=colorscale,
+            zmin=zmin,
+            zmax=zmax,
+            colorbar=dict(title=colorbar_title),
+            hovertemplate=(
+                "x: %{customdata[0]}"
+                "<br>y: %{customdata[1]}"
+                "<br>value: %{z:.4f}<extra></extra>"
+            ),
+        )
+    )
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=14)),
+        margin=dict(l=20, r=20, t=50, b=90),
+        height=max(380, 36 * len(display_labels) + 160),
+    )
+    fig.update_xaxes(tickangle=45, side="bottom")
+    fig.update_yaxes(autorange="reversed")
+
+    st.plotly_chart(fig, width='stretch')
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -563,14 +643,17 @@ with tab_data:
             if data is None:
                 st.error("Please load data first.")
             else:
-                with st.spinner(f"Loading model `{model_id}` and embedding {len(data)} usages..."):
+                with st.spinner(
+                    f"Embedding {len(data)} usages with `{model_id}` "
+                    "(reuses loaded model when available)..."
+                ):
                     try:
                         progress = st.progress(0)
 
                         def update_progress(batch, total):
                             progress.progress(batch / total)
 
-                        loaded = load_model(model_id, device="cpu")
+                        loaded = _get_cached_model(model_id)
                         eu = embed_usages(
                             loaded, data,
                             progress_callback=update_progress,
@@ -763,7 +846,7 @@ with tab_defs:
                                 "embed definitions using it."
                             )
                         else:
-                            loaded = load_model(st.session_state.model_name, device="cpu")
+                            loaded = _get_cached_model(st.session_state.model_name)
                             def_embs = embed_definitions(
                                 loaded, word,
                                 st.session_state.definitions_formatted,
@@ -789,6 +872,63 @@ with tab_defs:
             else:
                 st.info("Add definitions above to create the definition space.")
         else:
+            def_labels_clean = [
+                d.split(": ", 1)[-1] if ": " in d else d
+                for d in st.session_state.definitions_formatted
+            ]
+
+            st.subheader("Definition Similarity and Correlation")
+            if len(def_labels_clean) < 2:
+                st.info("Add at least two definitions to display pairwise heatmaps.")
+            else:
+                def_embs = st.session_state.definition_embeddings
+                if def_embs is not None:
+                    def_embs_np = def_embs.detach().cpu().numpy()
+                    ignore_diag_for_scale = False
+                    if st.session_state.distance_metric == "cosine":
+                        norms = np.linalg.norm(def_embs_np, axis=1, keepdims=True)
+                        norms = np.where(norms == 0.0, 1.0, norms)
+                        normed = def_embs_np / norms
+                        def_pairwise = np.clip(normed @ normed.T, -1.0, 1.0)
+                        pairwise_title = "Definition-Definition Cosine Similarity"
+                        pairwise_cbar = "cosine sim"
+                        pairwise_scale = "RdBu"
+                    else:
+                        dists = np.linalg.norm(
+                            def_embs_np[:, None, :] - def_embs_np[None, :, :],
+                            axis=2,
+                        )
+                        # Convert Euclidean distance into a monotonic similarity score.
+                        def_pairwise = 1.0 / (1.0 + dists)
+                        pairwise_title = "Definition-Definition Euclidean Similarity"
+                        pairwise_cbar = "euclid sim"
+                        pairwise_scale = "RdBu"
+                        ignore_diag_for_scale = True
+
+                    with st.expander("Definition-Definition Similarity Heatmap", expanded=True):
+                        _render_square_heatmap(
+                            def_pairwise,
+                            def_labels_clean,
+                            pairwise_title,
+                            colorscale=pairwise_scale,
+                            colorbar_title=pairwise_cbar,
+                            ignore_diagonal_for_scale=ignore_diag_for_scale,
+                        )
+
+                def_space_np = def_space.detach().cpu().numpy()
+                corr = np.corrcoef(def_space_np, rowvar=False)
+                corr = np.nan_to_num(corr, nan=0.0, posinf=0.0, neginf=0.0)
+                with st.expander("Definition-Dimension Correlation Heatmap", expanded=False):
+                    _render_square_heatmap(
+                        corr,
+                        def_labels_clean,
+                        "Correlation Between Definition Dimensions (Across Usages)",
+                        colorscale="RdBu",
+                        colorbar_title="pearson r",
+                    )
+
+            st.divider()
+
             view_mode_def = st.radio(
                 "Visualisation",
                 ["Dimensionality reduction", "LDA (LD1 + PC1)", "Definition axes (X/Y)"],
@@ -800,10 +940,6 @@ with tab_defs:
             show_anchors = st.checkbox("Show definition anchors", value=False, key="show_def_anchors")
 
             # --- Definition highlight selector ---
-            def_labels_clean = [
-                d.split(": ", 1)[-1] if ": " in d else d
-                for d in st.session_state.definitions_formatted
-            ]
             nearest_def_per_point = def_space.argmin(dim=1).tolist()
 
             highlight_def = st.selectbox(
