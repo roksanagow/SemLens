@@ -20,7 +20,7 @@ from typing import Sequence
 import torch
 from torch import Tensor
 
-from .utils import find_word_position
+from .data_loading import find_occurrences
 
 
 # ---------------------------------------------------------------------------
@@ -220,50 +220,45 @@ def load_definitions_from_json(
 # Definition embedding
 # ---------------------------------------------------------------------------
 
-def embed_definitions(
-    loaded_model,  # embeddings.LoadedModel
-    word: str,
-    formatted_definitions: list[str],
-    *,
-    batch_size: int = 16,
-    max_length: int = 128,
-) -> Tensor:
-    """Embed the target word contextualised within each definition.
+def definition_inputs(word: str, definitions: list[str], *, template="{word}: {definition}", readout="word"):
+    """Build inputs and target positions from an explicit template.
 
-    Each definition should already be formatted as ``"word: definition text"``.
-    The target word's position in each definition is auto-detected, and the
-    contextualised representation of that word is extracted.
-
-    Parameters
-    ----------
-    loaded_model : LoadedModel
-        From ``embeddings.load_model()``.
-    word : str
-        The target lemma.
-    formatted_definitions : list[str]
-        Already formatted (e.g. via ``format_definitions``).
-    batch_size : int
-        Inference batch size.
-    max_length : int
-        Max token length.
-
-    Returns
-    -------
-    Tensor
-        Shape ``[K, D]`` where K is the number of definitions.
+    The position of {word} is tracked during formatting, so a word occurring
+    inside the gloss cannot accidentally become the readout for a suffix template.
     """
+    import string
+    fields=[field for _,field,_,_ in string.Formatter().parse(template) if field is not None]
+    if any(field not in {"word", "definition"} for field in fields) or "definition" not in fields:
+        raise ValueError("Use {definition} and optionally {word} in the template.")
+    if readout not in {"word", "sentence"}:
+        raise ValueError("Choose word or sentence readout.")
+    if readout=="word" and fields.count("word") != 1:
+        raise ValueError("Target-word readout needs exactly one {word} placeholder.")
+    inputs,spans=[],[]
+    for text in definitions:
+        prefix=word+":"
+        gloss=text[len(prefix):].strip() if text.casefold().startswith(prefix.casefold()) else text.strip()
+        result=""
+        span=None
+        for literal,field,format_spec,conversion in string.Formatter().parse(template):
+            result+=literal
+            if field is not None:
+                if format_spec or conversion:
+                    raise ValueError("Template placeholders cannot use format specifications or conversions.")
+                value=word if field=="word" else gloss
+                if field=="word":
+                    span=(len(result),len(result)+len(value))
+                result+=value
+        if not result.strip():
+            raise ValueError("Definition input cannot be empty.")
+        inputs.append(result)
+        spans.append(span if span is not None else (0,len(result)))
+    return inputs,spans
+
+
+def embed_definitions(loaded_model, word: str, formatted_definitions: list[str], *, batch_size=16,
+                      max_length=128, layer=-1, template="{word}: {definition}", readout="word") -> Tensor:
     from .embeddings import extract_word_embeddings
-
-    # Find word position in each formatted definition
-    char_spans = []
-    for defn in formatted_definitions:
-        start, end = find_word_position(defn, word)
-        char_spans.append((start, end))
-
-    return extract_word_embeddings(
-        loaded_model,
-        formatted_definitions,
-        char_spans,
-        batch_size=batch_size,
-        max_length=max_length,
-    )
+    inputs,spans=definition_inputs(word,formatted_definitions,template=template,readout=readout)
+    return extract_word_embeddings(loaded_model,inputs,spans,batch_size=batch_size,max_length=max_length,
+                                   layer=layer,representation=readout)

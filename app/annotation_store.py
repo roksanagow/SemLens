@@ -1,93 +1,77 @@
-"""Per-session annotation store decoupled from Streamlit session_state keys.
-
-The data is keyed by a generated session identifier so each browser session
-keeps isolated annotation data, while the app code avoids using
-``st.session_state.annotations`` directly.
-"""
-
+"""Annotation state scoped to the browser session, with explicit snapshot support."""
 from __future__ import annotations
-
-from uuid import uuid4
-
+from copy import deepcopy
 import streamlit as st
 
 
-_SESSION_ID_KEY = "_annotation_store_session_id"
-_STORE_BY_SESSION: dict[str, dict[str, object]] = {}
+def _store():
+    if '_annotation_store' not in st.session_state:
+        st.session_state['_annotation_store']={'annotations':{},'sense_classes':[],'active_sense_class':'','history':[]}
+    return st.session_state['_annotation_store']
 
 
-def _default_store() -> dict[str, object]:
-    return {
-        "annotations": {},
-        "sense_classes": [],
-        "active_sense_class": "",
-    }
+def get_annotations():
+    return _store()['annotations']
 
 
-def _session_id() -> str:
-    sid = st.session_state.get(_SESSION_ID_KEY)
-    if not sid:
-        sid = str(uuid4())
-        st.session_state[_SESSION_ID_KEY] = sid
-    return sid
+def get_sense_classes():
+    return _store()['sense_classes']
 
 
-def _store() -> dict[str, object]:
-    sid = _session_id()
-    if sid not in _STORE_BY_SESSION:
-        _STORE_BY_SESSION[sid] = _default_store()
-    return _STORE_BY_SESSION[sid]
+def get_active_sense_class():
+    return _store()['active_sense_class']
 
 
-def get_annotations() -> dict[int, str]:
-    return _store()["annotations"]  # type: ignore[return-value]
+def set_active_sense_class(name):
+    _store()['active_sense_class']=name
 
 
-def set_annotation(idx: int, label: str):
-    get_annotations()[idx] = label
+def remember_annotations():
+    history=_store()['history']
+    history.append(deepcopy(get_annotations()))
+    del history[:-30]
 
 
-def remove_annotation(idx: int):
-    get_annotations().pop(idx, None)
+def undo_annotations():
+    if _store()['history']:
+        _store()['annotations']=_store()['history'].pop()
+
+
+def set_annotation(idx,label):
+    get_annotations()[int(idx)]=label
+
+
+def remove_annotation(idx):
+    get_annotations().pop(int(idx),None)
 
 
 def clear_annotations():
+    remember_annotations()
     get_annotations().clear()
 
 
-def get_sense_classes() -> list[str]:
-    return _store()["sense_classes"]  # type: ignore[return-value]
+def add_sense_class(name):
+    if name not in get_sense_classes():
+        get_sense_classes().append(name)
 
 
-def add_sense_class(name: str):
-    sense_classes = get_sense_classes()
-    if name not in sense_classes:
-        sense_classes.append(name)
+def remove_sense_class(name):
+    if name in get_sense_classes():
+        get_sense_classes().remove(name)
+    for idx in [i for i,label in get_annotations().items() if label==name]:
+        remove_annotation(idx)
+    if get_active_sense_class()==name:
+        set_active_sense_class(next(iter(get_sense_classes()),''))
+    _store()['history']=[]
 
 
-def remove_sense_class(name: str):
-    sense_classes = get_sense_classes()
-    if name in sense_classes:
-        sense_classes.remove(name)
-
-    annotations = get_annotations()
-    for idx in [k for k, v in annotations.items() if v == name]:
-        annotations.pop(idx, None)
-
-    if get_active_sense_class() == name:
-        set_active_sense_class(sense_classes[0] if sense_classes else "")
-
-
-def get_active_sense_class() -> str:
-    return _store()["active_sense_class"]  # type: ignore[return-value]
-
-
-def set_active_sense_class(name: str):
-    _store()["active_sense_class"] = name
+def restore_annotations(annotations, sense_classes=None):
+    _store()['annotations']={int(k):v for k,v in annotations.items()}
+    if sense_classes is not None:
+        _store()['sense_classes']=list(sense_classes)
+    _store()['history']=[]
+    set_active_sense_class(next(iter(get_sense_classes()),''))
 
 
 def reset_annotation_state():
-    store = _store()
-    store["annotations"] = {}
-    store["sense_classes"] = []
-    store["active_sense_class"] = ""
+    st.session_state['_annotation_store']={'annotations':{},'sense_classes':[],'active_sense_class':'','history':[]}

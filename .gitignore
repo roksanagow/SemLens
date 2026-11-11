@@ -22,7 +22,8 @@ build/
 Thumbs.db
 
 # Streamlit
-.streamlit/
+.streamlit/*
+!.streamlit/config.toml
 
 # Pytest
 .pytest_cache/
@@ -31,3 +32,7 @@ Thumbs.db
 /tmp/
 *.pt
 *.npy
+
+# Local corpora, embeddings, and saved analyses
+.semlens/
+*.semlens

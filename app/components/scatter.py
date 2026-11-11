@@ -8,12 +8,12 @@ from typing import Any
 import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
+from app.presentation import plot_chart
 
 from semlens.utils import (
-    bold_word_in_sentence,
     format_hover_text,
     get_palette,
-    split_text,
+    wrap_hover_html,
 )
 
 
@@ -168,6 +168,7 @@ def _build_figure_multi_trace(
             mode="markers+text",
             name="Definitions",
             text=definition_anchor_labels,
+            hovertext=[wrap_hover_html(label) for label in definition_anchor_labels],
             textposition="top center",
             textfont=dict(size=9, color="#555555"),
             hoverinfo="text",
@@ -310,6 +311,8 @@ def render_scatter(
     enable_selection: bool = False,
     interaction_mode: str = "lasso",
     key: str = "scatter",
+    char_spans: list[tuple[int, int]] | None = None,
+    corpus_order: list[str] | None = None,
 ) -> dict:
     """Render an interactive Plotly scatter plot in Streamlit.
 
@@ -324,14 +327,16 @@ def render_scatter(
     dict
         ``{"clicked_points": list[int]}`` — selected point indices.
     """
-    palette = get_palette(palette_name)
-    unique_corpora = sorted(set(corpus_per_point))
+    palette = list(get_palette(palette_name))
+    palette += [c for c in get_palette("Tab10 (matplotlib)") if c not in palette]
+    unique_corpora = list(dict.fromkeys(corpus_order or corpus_per_point))
     corpus_colour_map = {c: palette[i % len(palette)] for i, c in enumerate(unique_corpora)}
 
     hover_texts = []
     for i, (sent, corp) in enumerate(zip(sentences, corpus_per_point)):
         nearest_def = definition_labels_per_point[i] if definition_labels_per_point else None
-        hover_texts.append(format_hover_text(sent, target_word, corp, nearest_definition=nearest_def))
+        hover_texts.append(format_hover_text(sent,target_word,corp,nearest_definition=nearest_def,
+                                            char_span=char_spans[i] if char_spans is not None else None))
 
     if enable_selection:
         fig = _build_figure_single_trace(
@@ -350,6 +355,8 @@ def render_scatter(
         xaxis_title=axis_labels[0],
         yaxis_title=axis_labels[1],
         hovermode="closest",
+        hoverlabel=dict(align='left'),
+        meta=dict(semlens_usage_hover=True),
         height=600,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         margin=dict(l=60, r=30, t=80, b=60),
@@ -357,22 +364,30 @@ def render_scatter(
 
     if enable_selection:
         if interaction_mode == "click":
+            # Streamlit uses pan mode for point clicks. The scoped CSS below
+            # replaces its four-way cursor without disabling click selection.
             fig.update_layout(dragmode="pan", clickmode="event+select")
         else:
             fig.update_layout(dragmode="lasso", clickmode="event+select")
 
     # --- Render ---
     if not enable_selection:
-        st.plotly_chart(fig, width='stretch', key=key)
+        plot_chart(fig, width='stretch', key=key)
         return {"clicked_points": []}
 
-    event = st.plotly_chart(
-        fig,
-        width='stretch',
-        key=key,
-        on_select="rerun",
-        selection_mode=("points",) if interaction_mode == "click" else ("lasso",),
-    )
+    event_key=f'_selection_event_{key}'
+    def selection_changed():
+        st.session_state[event_key]=st.session_state.get(event_key,0)+1
+
+    # Keep click-mode cursor styling local; lasso retains its selection cursor.
+    with st.container(key='annotation_click_plot' if interaction_mode=='click' else 'annotation_lasso_plot'):
+        event = plot_chart(
+            fig,
+            width='stretch',
+            key=key,
+            on_select=selection_changed,
+            selection_mode=("points",) if interaction_mode == "click" else ("lasso",),
+        )
 
     # --- Parse selection ---
     clicked_points = []
@@ -386,10 +401,13 @@ def render_scatter(
         for pt in points:
             cd = pt.get("customdata")
             if cd is None:
-                # Some payload variants include point index fields only.
-                pi = pt.get("pointIndex", pt.get("pointNumber"))
+                pi = pt.get("point_index", pt.get("pointIndex", pt.get("pointNumber")))
                 if isinstance(pi, (int, np.integer)):
-                    clicked_points.append(int(pi))
+                    curve = pt.get("curve_number", pt.get("curveNumber"))
+                    if isinstance(curve, (int, np.integer)) and 0 <= curve < len(fig.data):
+                        trace_ids = fig.data[curve].customdata
+                        if trace_ids is not None and 0 <= pi < len(trace_ids):
+                            clicked_points.append(int(trace_ids[pi]))
                 continue
             if isinstance(cd, (list, tuple)):
                 for item in cd:
@@ -399,14 +417,14 @@ def render_scatter(
                 clicked_points.append(int(cd))
 
         # Alternative selection payload used by some Plotly/Streamlit versions.
-        if isinstance(selection, dict):
+        if not clicked_points and not points and isinstance(selection, dict):
             point_indices = selection.get("point_indices", [])
             if isinstance(point_indices, list):
                 for idx in point_indices:
                     if isinstance(idx, (int, np.integer)):
                         clicked_points.append(int(idx))
 
-        if hasattr(event, "get"):
+        if not clicked_points and not points and hasattr(event, "get"):
             event_point_indices = event.get("point_indices", [])
             if isinstance(event_point_indices, list):
                 for idx in event_point_indices:
@@ -430,7 +448,8 @@ def render_scatter(
     except TypeError:
         pass
 
-    return {"clicked_points": sorted(set(clicked_points))}
+    return {"clicked_points": sorted({i for i in clicked_points if 0 <= i < len(sentences)}),
+            "selection_event":(key,st.session_state.get(event_key,0))}
 
 
 def render_lda_weights_chart(
@@ -458,12 +477,6 @@ def render_lda_weights_chart(
         xaxis_title="LD1 Weight", yaxis_title="",
         height=max(300, 30 * len(df)),
         margin=dict(l=250, r=30, t=50, b=50),
-        annotations=[
-            dict(x=0.01, y=1.05, xref="paper", yref="paper",
-                 text=f"← {corpus_labels[0]}", showarrow=False, font=dict(color=colour_neg, size=11)),
-            dict(x=0.99, y=1.05, xref="paper", yref="paper",
-                 text=f"{corpus_labels[1]} →", showarrow=False, font=dict(color=colour_pos, size=11)),
-        ],
     )
 
-    st.plotly_chart(fig, width='stretch')
+    plot_chart(fig, width='stretch')

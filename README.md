@@ -1,226 +1,184 @@
-# SemLens 
+# SemLens
 
-**Interactive lexical semantic change detection for comparing words across time, domains, or corpora.**
+Interactive exploration of word meaning across **one to ten corpora**, using contextual embeddings, definitions, usage comparisons and human sense annotation.
 
-SemLens helps you inspect how the meaning of a target word shifts between two corpora. It combines contextual embeddings, dictionary definitions, interpretable projections, and semantic change metrics so you can move from a raw distributional comparison to a sense-level explanation.
+All loaded corpora appear together in a shared plot, coloured by corpus. With one corpus, you can explore and annotate usages. With several corpora, the plot continues to show all of them while separate selectors choose the two corpora for a score comparison.
 
-Use it for:
+## Install and launch
 
-- **Diachronic semantic change**: compare earlier vs. later language
-- **Cross-domain shift**: compare the same word across genres, registers, or subject domains
-- **Corpus comparison**: compare any two datasets where the same word appears in different contexts
-
-## What SemLens Does
-
-- Computes common **lexical semantic change detection (LSCD)** metrics: APD, PRT, AMD, SAMD, and directional AMD
-- Lets you choose a global **metric distance** (cosine or Euclidean) for APD, PRT, AMD, and SAMD
-- Visualises usages in a 2D scatter plot using PCA, UMAP, t-SNE, or LDA
-- Builds a **definition-aligned space** so dictionary senses become explicit axes
-- Lets you annotate usages into sense classes and export them
-- Supports manual definitions, Wiktionary definitions, or JSON input
-
-## Why Definition Projection Matters
-
-The most intuitive embedding plot is not always the most useful one. In a normal 2D reduction, the axes are mathematical constructs and can be hard to interpret. SemLens also offers **definition projection**, which turns each dictionary definition into a semantic axis.
-
-In practice, this means:
-
-- each usage is scored by how close it is to each definition
-- each dimension corresponds to one dictionary sense or gloss
-- you can inspect which sense axes separate your corpora most strongly
-
-So instead of asking only “do these corpora differ?”, you can ask “which sense is expanding, shrinking, or disappearing?”
-
-## Main Features
-
-- **LSCD metrics**: APD, PRT, AMD, SAMD, and directional AMD for asymmetric change detection
-- **Distance control**: choose cosine or Euclidean distance globally from the sidebar for metric computation
-- **Definition-space projection**: project usages onto dictionary definitions for an interpretable sense space
-- **Interactive 2D plots**: hover to inspect sentences, colour by corpus, and switch between PCA / UMAP / t-SNE
-- **LDA views**: separate corpora with LD1 and inspect interpretable definition weights
-- **Per-definition metrics**: see which senses contribute most to the change
-- **Definition diagnostics heatmaps**: inspect definition-definition similarity and cross-definition correlation in collapsible panels
-- **Sense annotation**: create sense classes, annotate with click or lasso, and export annotations
-- **Wiktionary support**: fetch definitions automatically via the MediaWiki API
-- **Flexible input**: paste sentences, upload CSV/TSV, upload raw text, or load pre-computed embeddings
-- **Accessible palettes**: colourblind-friendly palette options
-
-## Installation
+Python 3.10 or newer:
 
 ```bash
-git clone https://github.com/roksanagow/semlens.git
-cd semlens
-
-# Create and activate a virtual environment
 python -m venv .venv
-source .venv/bin/activate        # Linux / macOS
-# .venv\Scripts\activate         # Windows
-
-# Install the package with all dependencies
-pip install -e ".[all]"
-```
-
-### Dependencies
-
-- Python ≥ 3.10
-- PyTorch, Transformers, scikit-learn, pandas, NumPy
-- Streamlit, Plotly (for the web app)
-- umap-learn (optional, for UMAP projections)
-
-## Quick Start
-
-### 1. Launch the web app
-
-```bash
 source .venv/bin/activate
+pip install -e ".[all]"
 streamlit run app/app.py
 ```
 
-Open the URL shown in the terminal, usually `http://localhost:8501`.
+On Windows, activate with `.venv\Scripts\activate`.
 
-### 2. Load your data
+The first use of an encoder may download its model files from Hugging Face. The default is `pierluigic/xl-lexeme`. Other Hugging Face encoders or local model directories can be selected under advanced settings.
 
-In the **Data & Model** tab, choose one of the following:
+## A short workflow
 
-- paste sentences directly
-- upload a CSV/TSV file
-- upload raw text files
-- load pre-computed embeddings plus metadata
+1. In **Data & Model**, enter a target word and optional comma-separated forms, such as `run` with `runs, running, runner, runners`.
+2. Upload `.txt` corpora (the default), paste sentences, or load a CSV/TSV. Give each corpus a distinct name. Click **Load usages** and review the highlighted target occurrences.
+3. Choose **Target word** or **Whole sentence**, then embed the usages. Model, layer and context-window controls are inside **Advanced embedding settings**.
+4. In **Explore**, inspect every corpus together. PCA is the default; UMAP, t-SNE and LDA are optional.
+5. In **Definitions**, enter or import definitions and create a definition space. **Definition axes** starts with the first two definitions on the horizontal and vertical axes; use the axis selectors to choose other definitions or PC1/PC2.
+6. In **Annotation**, create sense classes; each becomes a button. The active sense has a coloured border. Point selection is on by default, with a standard arrow cursor: click an occurrence to assign it immediately. Lasso selection is also available. You can clear a selection and undo annotation changes.
+7. Expand **Save or export this analysis** to save locally or download a portable analysis file.
 
-### 3. Embed usages
+The default theme is **Dark**; choose **Light** or **Dark** in the sidebar. Green buttons at the bottom right lead to the next workspace. Open expandable diagnostic sections to load their content directly. In the AMD pair tables, each sentence cell scrolls horizontally while the neighbouring column stays in place. Other sentence tables scroll horizontally across the grid. Annotation review initially shows only annotated occurrences; tick **Include unannotated occurrences** to include the rest.
 
-Choose a model or enter a Hugging Face model ID, then embed the usages.
+## Inputs and target identification
 
-### 4. Add definitions
+Supported inputs:
 
-In the **Definitions & Def Space** tab, either:
+| Source | Contents |
+| --- | --- |
+| Paste sentences | One sentence per line, for 1–10 named corpora |
+| Raw corpora | Up to ten UTF-8 text files; each file is a named corpus |
+| CSV/TSV | `sentence`, `corpus`; optional `start`, `end`, `sentence_id` |
+| Pre-computed vectors | `.pt` or `.npy` with shape `[occurrences, dimensions]`, plus matching metadata rows |
+| Saved corpora | Persistent corpus embeddings with their source text and sentence index |
+| Saved word embeddings | Only the current word's usage vectors, matching sentences and extraction settings |
+| Saved analysis | A `.semlens` snapshot with usages, vectors, definitions and annotations |
 
-- type definitions manually
-- fetch them from Wiktionary
-- load them from JSON
+Matching is case insensitive and finds every occurrence of the explicit forms. Forms are user-defined: you may intentionally include related lexemes such as *runner*. SemLens does not silently substitute a vaguely similar word.
 
-### 5. Explore the change
+CSV `start` and `end` are **zero-based character offsets**, with an exclusive end. They are authoritative, including when the target has an unexpected surface form. Invalid, empty or partially specified spans produce an error. Without positions, all exact occurrences are found; pre-computed vectors require explicit positions if a row contains several matching occurrences, to preserve alignment.
 
-- inspect the full embedding space
-- compare LSCD metrics
-- switch to definition space to see which senses explain the change
-- annotate usages into sense classes and export the results
+The review panel and plot hover highlight the exact selected occurrence. Hover sentences wrap at approximately 75 characters and appear above or below their point, depending on available screen space. Unusually long sentences can be scrolled inside the hover box; no text is truncated. Repeated occurrences in one sentence remain separate observations; whole-sentence mode gives those occurrences the same context representation.
 
-### 6. Export annotations
+Raw-text sentence splitting is a lightweight punctuation heuristic. Abbreviations, quotations and historical orthography may need correction; use prepared sentences or CSV for precise context boundaries. Source files are retained unchanged in saved corpus collections, alongside the extracted sentences.
 
-In the **Annotation** tab, create sense classes, assign usages with click or lasso selection, and download the annotated CSV.
+## Corpus order and sampling
 
-### Annotation Tips
+Expand **Display & comparison settings** in the sidebar to set corpus order and indicate whether it is chronological. Remove and re-add names in the order control, then apply it. The input order is used initially; alphabetical order is never assumed to be chronological.
 
-- Choose an **Annotation interaction** mode:
-    - **Click** for single-point annotation
-    - **Lasso** for free-form multi-point annotation
-- In click mode, selection is forgiving: you can click near a point (within the hover area), not only the exact marker center.
-- Click a class button to make it active.
-- Press **Enter** in the class-name box to add a new class quickly.
-- New classes become active automatically when created.
+Sampling applies to **score comparisons**, independently of the shared plot:
 
-## How Definition Projection Works
+- **Equal sizes** (default): randomly select as many occurrences from each compared corpus as the smaller corpus contains.
+- **All occurrences**: allow unequal sizes. SAMD matches only the smaller number of occurrences; surplus occurrences in the larger corpus remain unmatched.
+- **Repeated equal-size samples**: repeat balanced selection without replacement within each repetition. A usage may participate in several repetitions, but remains one plotted occurrence. Mean, minimum, maximum and standard deviation describe variation between samples, **not a confidence interval**. When both corpora have the same size, repetitions use the same occurrences.
 
-Definition projection is the key idea behind SemLens.
+A saved seed makes sampling reproducible. An optional input cap reduces the occurrences loaded and plotted; zero means no cap. Large uncapped comparisons can take substantial time and memory, particularly SAMD.
 
-If a word has definitions such as:
+## Representations and layers
 
-- a financial institution
-- the side of a river
+**Target word** averages the selected target's subword-token representations. **Whole sentence** averages the encoder's text-token representations, excluding padding and special tokens. This is contextual mean pooling, not a separately trained sentence-embedding model's output head.
 
-then every usage is compared against both definitions. The result is a new space where each axis corresponds to one definition. A point near the “financial institution” axis is semantically closer to that sense; a point near the “river bank” axis is closer to that sense.
+The default layer `-1` uses the encoder's final output, preserving SemLens's original extraction convention. `0` selects input embeddings, and positive integers select intermediate transformer layers. Final output and a model's last intermediate hidden-state tensor are not necessarily identical; the saved metadata records the chosen extraction source.
 
-This makes it easier to understand *what kind* of change is happening, not just *whether* change is happening.
+Long sentences are encoded in overlapping windows. A token found in overlapping windows uses its first encoded occurrence. This preserves late targets instead of silently replacing truncated targets. The window size is part of the embedding configuration; long-context representations should be interpreted with that windowing policy in mind.
 
-### Interpreting LDA Definition Weights in Definition Space
+Decoder-only and encoder-decoder extraction strategies remain outside the supported workflow pending evaluation.
 
-Definition-space dimensions are **distances** to each definition (cosine distance by construction):
+## Persistent corpus embeddings
 
-- larger value = farther from that definition (less associated)
-- smaller value = closer to that definition (more associated)
+To prepare a collection for future sessions:
 
-So LDA definition weights are currently weights over **distance features**.
-If a definition has a positive LD1 weight, larger distance to that definition pushes a usage toward the second corpus side of LD1.
-If it has a negative LD1 weight, larger distance pushes toward the first corpus side.
+1. Paste or upload the **complete corpora** in Data & Model. A target word need not be selected for this preparation step.
+2. Expand **Prepare reusable corpus embeddings**.
+3. Leave **Embedding save scope** at **Whole corpus** (the default). Choose **Word and sentence representations** or **Sentence representations only**, and a storage precision.
+4. Click **Estimate storage**. The estimate includes vectors, copied source text, extracted sentences and an allowance for indexing. It may require downloading the tokenizer/configuration, but does not run the encoder.
+5. Click **Compute & save corpus embeddings**.
+6. Later, choose **Saved corpora**, select the collection, and enter any target and forms. Word selection does not call the encoder again.
 
-Practical reading tip: combine **weight sign** with each corpus's average definition distance in the per-definition table to decide which corpus is actually closer to that sense.
+A token cache supports both target-span and pooled sentence representations. A sentence-only cache is smaller and cannot recover individual word representations. The default float32 storage preserves the computed precision; float16 halves vector storage with rounding.
 
-## Typical Workflow
+Each immutable collection saves one selected layer and records the model ID, available model revision, tokenizer class, layer/readout, dimensions, precision, context window and windowing policy. Another model or unsaved layer needs a new collection. Interrupted computations are not published as usable caches; restart the preparation if it was interrupted.
 
-1. Load two corpora you want to compare.
-2. Embed the target word usages.
-3. Compute LSCD metrics.
-4. Add definitions for the target word.
-5. Inspect the definition-aligned plot.
-6. Annotate the usages into sense classes.
-7. Export your annotations if you want to use them elsewhere.
+Collections are stored under:
 
-## Programmatic Use
-
-SemLens can also be used as a Python library.
-
-```python
-from semlens.data_loading import load_from_sentences
-from semlens.embeddings import load_model, embed_usages
-from semlens.metrics import compute_all_metrics
-from semlens.definitions import format_definitions, embed_definitions
-from semlens.spaces import project_to_definition_space
-
-# Load usages
-data = load_from_sentences(
-    sentences=["I deposited money at the bank", "The river bank was muddy"],
-    word="bank",
-    corpus_labels=["modern", "modern"],
-)
-
-# Embed usages
-model = load_model("xl-lexeme")
-embedded = embed_usages(model, data)
-
-# Compare corpora
-metrics = compute_all_metrics(
-    embedded.get_corpus_embeddings("modern"),
-    embedded.get_corpus_embeddings("modern"),
-)
-
-# Build definition space
-defs = format_definitions("bank", [
-    "a financial institution",
-    "the side of a river or lake",
-])
-def_embs = embed_definitions(model, "bank", defs)
-def_space = project_to_definition_space(embedded.embeddings, def_embs)
+```text
+.semlens/corpora/<collection-id>/
+    index.sqlite    # original corpus text, sentence text/positions, embedding settings
+    vectors.npy     # memory-mapped numeric vectors
+    offsets.npy     # token character offsets, for token caches
 ```
 
-## Input Formats
+These files persist across application restarts and are excluded from Git. The collection directory is self-contained: it can be moved, and reopened using **Open a corpus cache from another location**. Keep its files together. NumPy arrays use memory mapping so the entire vector collection need not be loaded to inspect a word.
 
-| Format | Description |
-|--------|-------------|
-| **Paste sentences** | One sentence per line, grouped by corpus |
-| **CSV / TSV** | Columns: `sentence`, `corpus` (required); `start`, `end` (optional positions) |
-| **Raw text files** | One plain-text file per corpus; sentences are extracted automatically |
-| **Pre-computed embeddings** | `.pt` or `.npy` file + metadata CSV/TSV (same row order) |
+The numeric storage estimate is approximately:
 
-## Metrics
+```text
+number of saved vectors × embedding dimensions × bytes per value
+```
 
-| Metric | Description |
-|--------|-------------|
-| **APD** | Average Pairwise Distance — global distributional divergence |
-| **PRT** | Prototype Distance — distance between corpus centroids |
-| **AMD** | Average Minimum Distance — local correspondence between usages |
-| **SAMD** | Symmetric AMD — greedy one-to-one matching between corpora |
-| **AMD(C1→C2)** | Directional: high = senses in C1 not found in C2 (narrowing) |
-| **AMD(C2→C1)** | Directional: high = senses in C2 not found in C1 (broadening) |
+For one 1,024-dimensional layer, float16 needs approximately 205 MB for 100,000 sentence vectors, or 6.14 GB for 3 million token vectors, before text/index overhead. Float32 doubles the numeric payload.
 
-All metric panels use the sidebar **Metric distance** selector:
+For a smaller file, choose **Current word only** after embedding the loaded usages. This saves exactly those occurrences (including any applied selection cap), their complete sentences, target offsets, forms, vectors and model/layer/representation metadata. It stores the computed word or sentence representation, without copying unrelated source text. **Prepare word embedding file** shows the actual compressed size before saving or downloading; it does not rerun the encoder. Local files live in `.semlens/words/<name>.semlens` and reopen through **Saved word embeddings** after restarting the app. Reusing a name replaces that file. For another word or unsaved representation, return to the original corpora or a complete corpus cache.
 
-- cosine
-- euclidean
+## Saving an analysis
+
+**Prepare analysis file** displays the actual exported file size before saving. **Save analysis locally** writes `.semlens/projects/<name>.semlens`; **Download analysis** provides a portable copy. An opened analysis retains its filename, so you can edit definitions, annotations or settings and save an updated snapshot. Change **Analysis name** to save a separate copy. If a different saved analysis already uses that name, explicitly select **Replace existing saved analysis** before saving.
+
+Under **Data source → Saved analysis**, select a file and open **Manage saved analysis** to rename or delete it. Renaming preserves its contents and will not overwrite another file. Deletion requires a separate confirmation and removes only the selected local snapshot; an analysis already open in this session and separately saved corpus embeddings stay available. The same controls are available under **Saved word embeddings**. To edit the analysis contents, open it, make changes in the workspaces, then prepare and save it again.
+
+Reopen through **Data source → Saved analysis**. A snapshot includes:
+
+- The current target, forms, occurrence IDs, exact sentences and character positions.
+- Current usage embeddings and their model/layer settings.
+- Definitions, definition vectors and formatting settings.
+- Sense classes and annotations, linked to occurrences.
+- Corpus order, sampling/distance settings, and source text when available.
+
+A snapshot preserves the current analysis. Complete token caches remain separately available through **Saved corpora**; they are not copied into every snapshot. The snapshot's current analysis can still be reopened without its corpus cache or original uploads.
+
+Annotation CSV export can include unannotated occurrences. Changing representation or definitions preserves existing annotations on the same occurrences. Changing the target data only retains annotations whose occurrence identity still matches.
+
+## Definition space and interpretation
+
+By default, definitions use the input `word: definition` and match the usage representation: target-word extraction for word usages, whole-input pooling for sentence usages. Each usage then becomes a vector of **cosine distances to the definitions**: smaller means closer. These coordinates are distances, not probabilities or verified sense assignments.
+
+Fetched Wiktionary definitions and JSON imports appear in an editable text box, with one definition per line. Revise, add or remove entries, then click **Create definition space** to apply them. Draft edits survive navigation between workspaces during the session; existing plots continue to use the last created space until you apply the changes. Fetching again replaces the current dictionary draft.
+
+Under **Advanced definition settings**, choose `word: definition`, `definition: word`, the definition alone, or a template using `{word}` and `{definition}`. Independently choose target-word or whole-input pooling. A template preview shows the actual input. With sentence usage representations, the initial definition readout defaults to whole-input pooling. The encoder and layer are shared with the usage embeddings.
+
+**Definition axes** is the default view in Definitions. With two or more definitions, it initially plots distance to definition 1 against distance to definition 2. The **Horizontal axis** and **Vertical axis** selectors support any definition or PC1/PC2 fitted on the joint definition space. With just one definition, the vertical axis defaults to PC1. PCA, UMAP, t-SNE and LDA remain available under **Plot view**. PCA and LDA definition anchors are transformed with the same fitted model as the usages. Anchors are not added to UMAP/t-SNE plots.
+
+**Definition distributions and descriptive statistics** shows a separate coloured line for each corpus, connecting counts or proportions in 30 shared distance bins. Lines have distinct dash styles and no filled areas or smoothing. Hover to compare the corpora within a bin; click legend entries to hide/show a corpus or double-click to isolate one. The table reports count, mean, median and population standard deviation of definition distance. These describe model distances, not sense frequencies.
+
+The similarity and correlation heatmaps scale with the number of definitions. Their colour limits adapt to the observed values, so small differences remain visible; consult the numeric values and colour bars when comparing matrices. Short axis labels (`D1`, `D2`, …) refer to a complete definition key below; hovering a cell displays both definitions.
+
+LDA deliberately uses corpus labels to seek separation. With two corpora the view uses LD1 plus residual PC1; with more corpora it uses LD1/LD2 when available. Definition weights operate on **distance features**: positive means increasing distance increases LD1. Interpret weights alongside corpus positions and mean distances; a sign alone is not evidence that a sense became more frequent.
+
+## Scores and usage evidence
+
+| Score | What it compares |
+| --- | --- |
+| APD | Every cross-corpus usage pair; also reflects variation within the corpora |
+| PRT | The two corpus centroids |
+| AMD | Each usage's closest counterpart, averaged in both directions |
+| SAMD | A greedy one-to-one matching |
+| Directional AMD | Closest counterparts for one corpus looking into the other |
+
+The vector distance setting chooses cosine or Euclidean distance for multidimensional comparisons. **Per-definition scores always use absolute distance `|x-y|`**, because cosine distance between positive scalar features collapses to zero. A definition space with just one definition also uses absolute distance for its scores. The embedding-to-definition projection itself remains cosine distance.
+
+Scores are computed in the full representation, not on the plotted 2D coordinates. Small nonzero scores are displayed in scientific notation instead of rounded to zero. Cosine PRT is labelled undefined if a corpus centroid has no direction.
+
+With two or more corpora, **Explore** displays APD, PRT, AMD and SAMD as four heatmaps covering every corpus pair. Each uses its own colour scale and the sidebar's distance and sampling settings. Hover a cell for its score, sample sizes and sample min–max. The diagonal is left blank. Balanced sampling matches sizes separately for each pair; sample sizes can therefore differ across the matrix. Reordering corpora or reversing the pair selectors preserves the scores for a given pair and seed. All-pair results are cached, but an initial comparison of ten corpora requires 45 pair calculations.
+
+Expand **Inspect the usage pairs behind AMD** for ranked tables in both directions, with the weakest counterparts first. Type part of a sentence to search either member of a pair. Each sentence has its own horizontal scroll area; tables show up to 50 pairs per page, with ranking and search covering all pairs. When sampling is repeated, the sample selector uses the exact occurrences underlying that repetition's scores. The displayed distances and scores use the same representation and distance setting. Explore and Definitions each have an inspector because the nearest counterparts can change between full embeddings and definition space; the panel title identifies its space.
+
+A high directional score identifies weak counterparts in the chosen comparison. Whether this reflects semantic emergence/loss, topical variation or corpus composition requires inspection of the usages.
+
+## Development and verification
+
+For the planned newspaper demo, [Guardian collection instructions](docs/guardian-collection.md) explain how to search for `bubble`/`bubbles` and export small, dated corpora with source metadata. A developer API key is required for live collection.
+
+```bash
+pip install -e ".[all]"
+python -m pytest -q
+```
+
+Tests cover explicit offsets, word forms, one/many corpora, scalar distances, balanced sampling, LDA, shared plots, annotation invalidation, cache reuse and saved-analysis round trips. Optional integration tests use a small locally cached real encoder without network downloads. When present, the user-supplied files in `testing_texts/` exercise corpus extraction and selected-excerpt embedding/cache equivalence.
+
+The core library is in `semlens/`; Streamlit workspaces are separated into `app/ui_data.py`, `app/ui_explore.py`, `app/ui_definitions.py` and `app/ui_annotations.py`.
 
 ## Citation
-
-If you use this tool in your research, please cite the underlying metrics paper:
 
 ```bibtex
 @inproceedings{goworek-dubossarsky-2026-rethinking,
@@ -233,30 +191,7 @@ If you use this tool in your research, please cite the underlying metrics paper:
 }
 ```
 
-## Project Structure
-
-```
-semlens/
-├── semlens/          # Core Python library (pip-installable)
-│   ├── data_loading.py  # Input normalisation
-│   ├── embeddings.py    # HF model loading & embedding extraction
-│   ├── definitions.py   # Wiktionary, formatting, definition embedding
-│   ├── spaces.py        # Full space & definition-space projection
-│   ├── metrics.py       # APD, PRT, AMD, SAMD, directional AMD
-│   ├── reduction.py     # PCA, UMAP, t-SNE for 2D visualisation
-│   ├── lda.py           # LDA projection & weight extraction
-│   └── utils.py         # Palettes, edit distance, text formatting
-├── app/                 # Streamlit web application
-│   ├── app.py           # Main entry point
-│   ├── state.py         # Session state management
-│   └── components/      # Reusable UI components
-├── examples/            # Example data & definitions
-└── tests/               # Unit tests
-```
-
-## Acknowledgements
-
-This tool builds on code and methodology from the [Rethinking LSCD Metrics](https://github.com/roksanagow/Rethinking_LSCD_Metrics) repository and the [projecting_sentences](https://github.com/roksanagow/projecting_sentences) annotation tool.
+The tool builds on [Rethinking LSCD Metrics](https://github.com/roksanagow/Rethinking_LSCD_Metrics) and [projecting_sentences](https://github.com/roksanagow/projecting_sentences). The local research repository and paper describe different distance conventions in some places; exact reproduction of historical experiment results remains to be reconciled.
 
 ## License
 

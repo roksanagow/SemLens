@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import html
 from typing import Sequence
 
 
@@ -200,16 +201,50 @@ def bold_word_in_sentence(sentence: str, word: str) -> str:
     return pattern.sub(r"<b>\1</b>", sentence)
 
 
+def wrap_hover_html(text: str, width: int = 75, spans: Sequence[tuple[int, int]] = ()) -> str:
+    """Wrap raw text before HTML escaping, preserving exact highlighted spans.
+
+    Breaks prefer whitespace within the limit. Long unbroken strings are split
+    as well, so a single token cannot push the tooltip off screen.
+    """
+    if width < 1:
+        raise ValueError('Hover line width must be positive.')
+    lines=[]
+    start=0
+    while start<len(text):
+        end=min(start+width,len(text))
+        newline=text.find('\n',start,end)
+        if newline>=0:
+            end=newline
+        elif end<len(text):
+            space=text.rfind(' ',start,end+1)
+            if space>start:
+                end=space
+        pieces=[]
+        cursor=start
+        for left,right in spans:
+            left,right=max(start,left),min(end,right)
+            if left<right:
+                pieces.extend((html.escape(text[cursor:left]),'<b>',html.escape(text[left:right]),'</b>'))
+                cursor=right
+        pieces.append(html.escape(text[cursor:end]))
+        lines.append(''.join(pieces))
+        start=end+1 if end<len(text) and text[end] in ' \n' else end
+    return '<br>'.join(lines)
+
+
 def format_hover_text(
     sentence: str,
     word: str,
     corpus: str,
-    max_line_length: int = 95,
+    max_line_length: int = 75,
     nearest_definition: str | None = None,
+    char_span: tuple[int, int] | None = None,
 ) -> str:
     """Build a rich hover string for a single usage point."""
-    text = bold_word_in_sentence(split_text(sentence, max_line_length), word)
-    parts = [f"<b>[{corpus}]</b><br>{text}"]
+    spans=[char_span] if char_span is not None else [m.span() for m in re.finditer(rf'\b{re.escape(word)}\b',sentence,re.IGNORECASE)]
+    text=wrap_hover_html(sentence,max_line_length,spans)
+    parts = [f"<b>[{wrap_hover_html(corpus,max_line_length)}]</b><br>{text}"]
     if nearest_definition:
-        parts.append(f"<br><i>Nearest def: {nearest_definition}</i>")
+        parts.append(f"<br><i>{wrap_hover_html('Nearest definition: '+nearest_definition,max_line_length)}</i>")
     return "".join(parts)

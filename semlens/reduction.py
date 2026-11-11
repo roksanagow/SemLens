@@ -39,6 +39,11 @@ def reduce_to_2d(
     """
     X = embeddings.detach().cpu().numpy() if isinstance(embeddings, Tensor) else embeddings
 
+    if X.ndim != 2 or min(X.shape) == 0 or not np.isfinite(X).all():
+        raise ValueError("Provide a non-empty finite embedding matrix.")
+    if len(X) == 1:
+        return np.zeros((1, 2))
+
     if method == "pca":
         return _pca_2d(X, **kwargs)
     elif method == "umap":
@@ -62,9 +67,11 @@ def _pca_2d(X: np.ndarray, **kwargs) -> np.ndarray:
 
 
 def _umap_2d(X: np.ndarray, **kwargs) -> np.ndarray:
+    if len(X) < 4:
+        return _pca_2d(X)
     from umap import UMAP
 
-    defaults = {"n_components": 2, "random_state": 42}
+    defaults = {"n_components": 2, "random_state": 42, "n_neighbors": min(15, len(X)-1)}
     defaults.update(kwargs)
     reducer = UMAP(**defaults)
     return reducer.fit_transform(X)
@@ -77,7 +84,7 @@ def _tsne_2d(X: np.ndarray, **kwargs) -> np.ndarray:
     # Adapt perplexity if N is small
     n = X.shape[0]
     if n <= 30:
-        defaults["perplexity"] = max(2, n // 3)
+        defaults["perplexity"] = max(1, min(n-1, n // 3))
     defaults.update(kwargs)
     reducer = TSNE(**defaults)
     return reducer.fit_transform(X)

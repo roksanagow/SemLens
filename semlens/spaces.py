@@ -50,7 +50,7 @@ def project_to_definition_space(
     normed_defs = F.normalize(definition_embeddings, dim=1)
 
     cosine_sim = torch.mm(normed_usage, normed_defs.T)  # [N, K]
-    cosine_dist = 1.0 - cosine_sim
+    cosine_dist = (1.0 - cosine_sim).clamp(0.0, 2.0)
 
     return cosine_dist
 

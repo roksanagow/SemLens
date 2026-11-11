@@ -172,13 +172,7 @@ class TestMetrics:
     def test_prt_identical(self):
         c1, c2 = self._identical_corpora()
         score = calculate_prt(c1, c2)
-        # PRT returns 1/(cos+eps), so for identical centroids → near 1
-        # Actually PRT = 1/(cos_sim + eps).  cos_sim=1 → PRT ≈ 1.
-        # But the paper convention is cosine *distance*. Let me check.
-        # Looking at the original: (1.0 / (cos + eps))
-        # For identical: cos=1 → 1/1 = 1.  This is not cosine distance.
-        # This matches the paper repo exactly.  It's inverted cosine sim.
-        assert score < 1.1  # near 1 for identical
+        assert abs(score) < 1e-6  # cosine distance of identical nonzero centroids
 
     def test_amd_identical(self):
         c1, c2 = self._identical_corpora()
