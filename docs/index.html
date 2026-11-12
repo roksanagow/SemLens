@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SemLens: explore how a word is used across corpora</title>
+<meta name="description" content="SemLens is a free tool for linguists to explore, measure and annotate how a word's meaning differs across corpora. It runs on your own computer.">
+<style>
+  :root {
+    --bg: #ffffff; --surface: #f4f6fa; --text: #172033; --muted: #5b6577; --border: #d9dee8;
+    --accent: #e5484d; --accent-text: #ffffff; --navy: #26324d; --code-bg: #111827; --code-text: #e8ecf3;
+    --chip: #e9f2ec; --chip-text: #1d5c3a; --frame: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1420; --surface: #171e2d; --text: #e8ecf3; --muted: #a2adbf; --border: #2c3650;
+      --accent: #f0646a; --accent-text: #14181f; --navy: #c9d4ee; --code-bg: #060a12; --code-text: #e8ecf3;
+      --chip: #17352a; --chip-text: #9fdcb9; --frame: #ffffff;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 17px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  a { color: inherit; }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 20px; }
+  nav { position: sticky; top: 0; z-index: 5; background: var(--bg); border-bottom: 1px solid var(--border); }
+  nav .wrap { display: flex; align-items: center; gap: 22px; height: 56px; }
+  nav .brand { font-weight: 700; font-size: 19px; text-decoration: none; margin-right: auto; }
+  nav a { text-decoration: none; color: var(--muted); font-size: 15px; }
+  nav a:hover { color: var(--text); }
+  @media (max-width: 640px) { nav a.opt { display: none; } }
+
+  header.hero { padding: 64px 0 40px; }
+  h1 { font-size: clamp(32px, 5vw, 50px); line-height: 1.12; margin: 0 0 18px; letter-spacing: -0.02em; text-wrap: balance; }
+  .lead { font-size: 20px; color: var(--muted); max-width: 720px; margin: 0 0 28px; }
+  .buttons { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 44px; }
+  .btn { display: inline-block; padding: 12px 20px; border-radius: 8px; text-decoration: none; font-weight: 600; border: 1px solid var(--border); }
+  .btn.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  figure { margin: 0; }
+  figure img { display: block; width: 100%; height: auto; background: var(--frame); border: 1px solid var(--border); border-radius: 10px; }
+  figcaption { font-size: 14px; color: var(--muted); margin-top: 8px; }
+
+  section { padding: 56px 0; border-top: 1px solid var(--border); }
+  h2 { font-size: 30px; line-height: 1.2; margin: 0 0 10px; letter-spacing: -0.01em; }
+  .intro { color: var(--muted); max-width: 720px; margin: 0 0 32px; }
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin: 0; padding: 0; list-style: none; }
+  .facts li { background: var(--surface); border-radius: 10px; padding: 18px 20px; }
+  .facts strong { display: block; margin-bottom: 4px; }
+  .facts span { color: var(--muted); font-size: 15.5px; }
+
+  ol.setup { list-style: none; margin: 0; padding: 0; counter-reset: step; }
+  ol.setup > li { counter-increment: step; position: relative; padding: 0 0 34px 58px; }
+  ol.setup > li::before { content: counter(step); position: absolute; left: 0; top: 0; width: 38px; height: 38px; border-radius: 50%;
+                          background: var(--navy); color: var(--bg); font-weight: 700; display: grid; place-items: center; }
+  ol.setup h3 { margin: 4px 0 6px; font-size: 20px; }
+  ol.setup p { margin: 0 0 12px; max-width: 760px; }
+  .time { display: inline-block; background: var(--chip); color: var(--chip-text); font-size: 13.5px; font-weight: 600;
+          padding: 2px 10px; border-radius: 999px; margin-left: 8px; vertical-align: 2px; white-space: nowrap; }
+  .os { font-size: 14px; color: var(--muted); margin: 10px 0 4px; }
+  .code { position: relative; background: var(--code-bg); color: var(--code-text); border-radius: 8px; margin: 0 0 10px; }
+  .code pre { margin: 0; padding: 14px 84px 14px 16px; overflow-x: auto; font: 14.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .code button { position: absolute; top: 8px; right: 8px; font: inherit; font-size: 13px; padding: 4px 10px; border-radius: 6px;
+                 border: 1px solid #3a455c; background: #1e2738; color: #e8ecf3; cursor: pointer; }
+  .code button:hover { background: #2a3550; }
+  code { font: 0.92em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--surface); padding: 1px 5px; border-radius: 4px; }
+  details { border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; margin: 10px 0; max-width: 760px; }
+  summary { cursor: pointer; font-weight: 600; }
+  details p, details ul { margin: 10px 0 4px; }
+
+  .part { margin: 44px 0 6px; font-size: 13.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+  .step { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 8fr); gap: 28px; align-items: start; padding: 26px 0; }
+  .step + .step { border-top: 1px dashed var(--border); }
+  .step h3 { margin: 0 0 8px; font-size: 21px; line-height: 1.25; }
+  .step p { margin: 0 0 10px; }
+  .step .hint { color: var(--muted); font-size: 15.5px; }
+  @media (max-width: 820px) { .step { grid-template-columns: 1fr; gap: 14px; } }
+
+  .cite { background: var(--surface); border-radius: 10px; padding: 16px 18px; overflow-x: auto;
+          font: 13.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre; }
+  section, header.hero { scroll-margin-top: 64px; }
+  nav a { white-space: nowrap; }
+  ol.setup > li, .step > div, figure { min-width: 0; }
+  .code { max-width: 100%; overflow: hidden; }
+  @media (max-width: 640px) {
+    nav .wrap { gap: 14px; }
+    ol.setup > li { padding-left: 0; padding-top: 48px; }
+    .code pre { padding-right: 16px; }
+    .code button { position: static; display: block; margin: 0 8px 8px auto; }
+    .time { margin-left: 0; display: table; margin-top: 6px; }
+  }
+  footer { border-top: 1px solid var(--border); padding: 30px 0 50px; color: var(--muted); font-size: 15px; }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <a class="brand" href="#top">SemLens</a>
+    <a href="#start">Get started</a>
+    <a href="#tour">Walkthrough</a>
+    <a class="opt" href="#help">Questions</a>
+    <a href="https://github.com/roksanagow/SemLens">GitHub</a>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <div class="wrap">
+    <h1>See how a word is used across corpora, one sentence at a time</h1>
+    <p class="lead">SemLens is a free tool for exploring, measuring and annotating how a word's meaning differs between collections of text, such as time periods, genres or communities. No programming needed, and it runs on your own computer.</p>
+    <div class="buttons">
+      <a class="btn primary" href="#start">Get started</a>
+      <a class="btn" href="#tour">See what it does</a>
+    </div>
+    <figure>
+      <img src="assets/03_explore_hover.webp" width="1600" height="1052" alt="A scatter plot of 350 sentences containing the word bubble, coloured by period, with one sentence shown on hover.">
+      <figcaption>350 sentences containing <em>bubble</em> from the Guardian, 1999–2026. Each point is one sentence; the highlighted one is an “AI bubble”.</figcaption>
+    </figure>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <h2>What it is for</h2>
+    <p class="intro">A language model reads every sentence that contains your word and places similar uses close together. SemLens lets you look at that picture, measure it, and decide for yourself what the senses are.</p>
+    <ul class="facts">
+      <li><strong>Read, don't trust</strong><span>Every point, score and table leads back to the sentences behind it.</span></li>
+      <li><strong>One to ten corpora</strong><span>Raw text files, pasted sentences, or a table of usages with your own columns.</span></li>
+      <li><strong>Your data stays with you</strong><span>The model runs on your computer. Nothing you load is uploaded anywhere.</span></li>
+      <li><strong>Many languages</strong><span>The default model is multilingual, and other models can be chosen.</span></li>
+    </ul>
+  </div>
+</section>
+
+<section id="start">
+  <div class="wrap">
+    <h2>Get started</h2>
+    <p class="intro">Three steps, typed into a terminal (Terminal on macOS and Linux, PowerShell on Windows). You need about 4&nbsp;GB of free disk space and an internet connection for the downloads.</p>
+
+    <ol class="setup">
+      <li>
+        <h3>Install uv <span class="time">about 1 minute</span></h3>
+        <p><a href="https://docs.astral.sh/uv/getting-started/installation/">uv</a> is a small program that fetches Python tools and everything they need. You only do this once.</p>
+        <div class="os">macOS and Linux</div>
+        <div class="code"><pre>curl -LsSf https://astral.sh/uv/install.sh | sh</pre><button type="button">Copy</button></div>
+        <div class="os">Windows (PowerShell)</div>
+        <div class="code"><pre>powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"</pre><button type="button">Copy</button></div>
+        <p>Then close the terminal and open a new one, so that it knows about <code>uv</code>.</p>
+      </li>
+      <li>
+        <h3>Start SemLens <span class="time">first time: roughly 5–15 minutes</span></h3>
+        <div class="code"><pre>uvx --python 3.12 --from git+https://github.com/roksanagow/SemLens semlens</pre><button type="button">Copy</button></div>
+        <p>The first time, this downloads SemLens and the software it relies on (a little over 1&nbsp;GB, mostly PyTorch). How long that takes depends on your connection; the terminal shows progress and it is normal for it to sit on one line for a while. When it is ready, SemLens opens in your web browser.</p>
+        <p>Every later time, the same command starts in a few seconds. Keep the terminal window open while you work; closing it stops SemLens.</p>
+      </li>
+      <li>
+        <h3>Try the built-in example <span class="time">first time: a 2&nbsp;GB download, then a minute or two</span></h3>
+        <p>Under <strong>Data source</strong>, choose <strong>Example: “bubble” in the Guardian, 1999–2026</strong>, click <strong>Load the example</strong>, then <strong>Embed loaded usages</strong>.</p>
+        <p>The first time you embed anything, the language model itself is downloaded (about 2.2&nbsp;GB, once). After that, the 350 example sentences usually take a minute or two on a recent laptop. Then follow the walkthrough below with the real thing in front of you.</p>
+      </li>
+    </ol>
+
+    <details>
+      <summary>Where are my files kept?</summary>
+      <p>Saved corpora, embeddings and analyses go to a folder called <code>.semlens</code> in your home folder; the terminal prints the exact location when SemLens starts. To use another folder, set <code>SEMLENS_HOME</code> before the command, for example <code>SEMLENS_HOME=~/Documents/SemLens uvx …</code>. You can also download any analysis as a single file from inside the app and send it to a colleague.</p>
+    </details>
+    <details>
+      <summary>Does anything leave my computer?</summary>
+      <p>Your texts and annotations do not. SemLens uses the internet for three things only: the downloads above, fetching dictionary definitions from Wiktionary if you ask for them, and downloading another model if you choose one.</p>
+    </details>
+    <details>
+      <summary>Updating, a different port, and installing from the repository</summary>
+      <ul>
+        <li>To get the newest version, add <code>--refresh</code> right after <code>uvx</code>.</li>
+        <li>Anything after <code>semlens</code> goes to the app server, for example <code>semlens --server.port 8502</code>.</li>
+        <li>To install from a copy of the repository instead, see the <a href="https://github.com/roksanagow/SemLens#install-and-launch">README</a>.</li>
+      </ul>
+    </details>
+  </div>
+</section>
+
+<section id="tour">
+  <div class="wrap">
+    <h2>A walkthrough with one word</h2>
+    <p class="intro">The example is the word <em>bubble</em> in Guardian and Observer articles: 50 sentences from each of seven periods, drawn at random and not chosen for any sense. In 1999 a bubble was mostly dot-com. In 2020 people were told to form one.</p>
+
+    <div class="part">1 · Load</div>
+
+    <div class="step">
+      <div>
+        <h3>A tool for exploring and annotating corpora</h3>
+        <p>SemLens has four workspaces: load your data, explore it, compare it with definitions, and annotate senses. The first screen explains each one.</p>
+        <p class="hint">The example data is one click away under Data source.</p>
+      </div>
+      <figure><a href="assets/01_start.webp"><img loading="lazy" src="assets/01_start.webp" width="1600" height="960" alt="The first screen of SemLens, with a short guide and the Data source selector set to the example."></a></figure>
+    </div>
+
+    <div class="step">
+      <div>
+        <h3>Various data formats</h3>
+        <p>Upload plain text files (one per corpus), paste sentences, or upload a table of usages. Extra columns in a table, such as date or source, are kept and come back in your annotation export.</p>
+        <p class="hint">Work can be saved and reopened, as embedded corpora or as a whole analysis.</p>
+      </div>
+      <figure><a href="assets/01_b_data_sources.webp"><img loading="lazy" src="assets/01_b_data_sources.webp" width="1600" height="915" alt="The Data source menu listing eight ways to load data."></a></figure>
+    </div>
+
+    <div class="step">
+      <div>
+        <h3>Select and check sentences</h3>
+        <p>Before anything is computed, read what was found. The concordance shows every occurrence with the word in the middle. Search it, and sort by the word before or after.</p>
+        <p class="hint">Here: lines containing <em>burst</em> or <em>pop</em>, sorted by the word before the target.</p>
+      </div>
+      <figure><a href="assets/02_concordance.webp"><img loading="lazy" src="assets/02_concordance.webp" width="1600" height="1020" alt="A concordance of bubble, filtered to lines containing burst or pop and sorted by the preceding word."></a></figure>
+    </div>
+
+    <div class="part">2 · Explore</div>
+
+    <div class="step">
+      <div>
+        <h3>Hundreds of sentences in one overview</h3>
+        <p>Each point is one sentence, coloured by corpus. Sentences the model treats as similar sit close together. Hover over a point to read it.</p>
+        <p class="hint">Three regions are visible before we know what they are.</p>
+      </div>
+      <figure><a href="assets/03_explore_hover.webp"><img loading="lazy" src="assets/03_explore_hover.webp" width="1600" height="1052" alt="Scatter plot of all 350 sentences with a hover box showing one sentence."></a></figure>
+    </div>
+
+    <div class="step">
+      <div>
+        <h3>Where is the tech bubble?</h3>
+        <p>Type words and every sentence containing them is ringed. <em>AI</em>, <em>dot-com</em>, <em>internet</em> and <em>tech</em> give 27 sentences, 13 of them from 1999–2003, and nearly all in the same arm of the plot.</p>
+        <p class="hint">The model was not told these are financial; it placed them together from context.</p>
+      </div>
+      <figure><a href="assets/04_explore_search.webp"><img loading="lazy" src="assets/04_explore_search.webp" width="1600" height="1345" alt="The plot with a search for AI, dot-com and related words; matching points are ringed in red in the lower left."></a></figure>
+    </div>
+
+    <div class="step">
+      <div>
+        <h3>Compare two corpora by hiding the rest</h3>
+        <p>Click a corpus in the legend to hide it. With only 1999–2003 and 2020–2021 showing, the ringed sentences mention <em>support</em>, <em>travel</em>, <em>Covid</em> or <em>household</em>: none in the first period, nine in the second.</p>
+        <p class="hint">The choice is remembered when you change the view.</p>
+      </div>
+      <figure><a href="assets/05_explore_legend.webp"><img loading="lazy" src="assets/05_explore_legend.webp" width="1600" height="1074" alt="The plot showing two periods only, with a hover box on a sentence about travel bubbles."></a></figure>
+    </div>
+
+    <div class="step">
+      <div>
+        <h3>Other views of the same points</h3>
+        <p>PCA, UMAP, t-SNE and LDA are different ways of turning the model's high-dimensional vectors into a flat picture. Each view's settings are in Plot options.</p>
+        <p class="hint">The coordinates of any view download as a spreadsheet file.</p>
+      </div>
+      <figure><a href="assets/05_b_other_views.webp"><img loading="lazy" src="assets/05_b_other_views.webp" width="1600" height="1425" alt="The same sentences in a UMAP view, with its settings shown above the plot."></a></figure>
+    </div>
+
+    <div class="part">3 · Measure</div>
+
+    <div class="step">
+      <div>
+        <h3>Comparing corpora against each other: APD and PRT</h3>
+        <p>Scores turn two clouds of points into one number. <strong>APD</strong> is the average distance over every cross-corpus pair of sentences. <strong>PRT</strong> is the distance between the two corpus averages.</p>
+        <p class="hint">The formula sits under each heatmap. On PRT, 2020–2021 stands furthest from the earliest period.</p>
+      </div>
+      <figure><a href="assets/06_heatmaps_apd_prt.webp"><img loading="lazy" src="assets/06_heatmaps_apd_prt.webp" width="1600" height="859" alt="Heatmaps of APD and PRT for every pair of periods, with formulas."></a></figure>
+    </div>
+
+    <div class="step">
+      <div>
+        <h3>Every corpus against every other: AMD and SAMD</h3>
+        <p><strong>AMD</strong> asks, for each sentence, how far its closest counterpart in the other corpus is. <strong>SAMD</strong> does the same but lets each sentence be matched only once. They react when a sense appears or disappears, even if the average barely moves.</p>
+        <p class="hint">These two come from <a href="https://aclanthology.org/2026.lchange-1.13">our paper</a>.</p>
+      </div>
+      <figure><a href="assets/06_heatmaps_amd_samd.webp"><img loading="lazy" src="assets/06_heatmaps_amd_samd.webp" width="1600" height="842" alt="Heatmaps of AMD and SAMD for every pair of periods, with formulas."></a></figure>
+    </div>
+
+    <div class="step">
+      <div>
+        <h3>Looking at changes along a timeline</h3>
+        <p>When your corpora are in time order, the same scores are drawn as lines: each period against the one before (solid) and against the first (dashed).</p>
+        <p class="hint">Against 1999–2003, PRT climbs to a peak in 2020–2021, then falls back part of the way.</p>
+      </div>
+      <figure><a href="assets/07_change_over_time.webp"><img loading="lazy" src="assets/07_change_over_time.webp" width="1600" height="939" alt="Four line charts of APD, PRT, AMD and SAMD across periods."></a></figure>
+    </div>
+
+    <div class="step">
+      <div>
+        <h3>Read the sentences behind the scores</h3>
+        <p>For any two corpora, see the sentences that are furthest from any counterpart in the other one. These are the candidates for a new or lost sense.</p>
+        <p class="hint">Names and fixed phrases surface here too, which is useful: you can see the noise.</p>
+      </div>
+      <figure><a href="assets/09_weakest_pairs.webp"><img loading="lazy" src="assets/09_weakest_pairs.webp" width="1600" height="1282" alt="Two tables of sentence pairs between 2016–2019 and 2020–2021, ranked by distance."></a></figure>
+    </div>
+
+    <div class="step">
+      <div>
+        <h3>Closest sentences to “AI bubble”</h3>
+        <p>Pick one sentence and see its nearest neighbour in every other corpus. For an <em>AI bubble</em> from 2024–2026, each earlier period offers another speculative bubble, at very small distances: dot.com, property, internet, Bitcoin.</p>
+        <p class="hint">New wording, old sense.</p>
+      </div>
+      <figure><a href="assets/10_nearest_ai.webp"><img loading="lazy" src="assets/10_nearest_ai.webp" width="1600" height="1034" alt="A table of the closest sentence to an AI bubble sentence in each earlier period."></a></figure>
+    </div>
+
+    <div class="step">
+      <div>
+        <h3>Closest to “support bubble”</h3>
+        <p>The same lookup for a <em>support bubble</em> from 2020–2021 finds nothing close before 2020. The nearest earlier sentences are social bubbles, five to ten times further away.</p>
+        <p class="hint">A new sense, and a hint of where it came from.</p>
+      </div>
+      <figure><a href="assets/11_nearest_support.webp"><img loading="lazy" src="assets/11_nearest_support.webp" width="1600" height="1101" alt="A table of the closest sentence to a support bubbles sentence in each other period, with larger distances."></a></figure>
+    </div>
+
+    <div class="part">4 · Definitions</div>
+
+    <div class="step">
+      <div>
+        <h3>Definition space</h3>
+        <p>Write the senses you expect, one definition per line. The model reads each one, and every sentence is then described by how far it is from each definition.</p>
+        <p class="hint">The definitions are your hypotheses. Change them and rebuild in seconds.</p>
+      </div>
+      <figure><a href="assets/12_definitions_input.webp"><img loading="lazy" src="assets/12_definitions_input.webp" width="1600" height="689" alt="The definitions box with four definitions of bubble."></a></figure>
+    </div>
+
+    <div class="step">
+      <div>
+        <h3>Or start from a dictionary</h3>
+        <p>Fetch the word's entries from Wiktionary, choose the parts of speech to keep, then edit the list by hand.</p>
+        <p class="hint">Usage labels such as (economics) and (figurative) are kept.</p>
+      </div>
+      <figure><a href="assets/12_b_wiktionary.webp"><img loading="lazy" src="assets/12_b_wiktionary.webp" width="1600" height="1098" alt="Definitions of bubble fetched from Wiktionary, with a part-of-speech filter."></a></figure>
+    </div>
+
+    <div class="step">
+      <div>
+        <h3>Financial sense against social sense</h3>
+        <p>Now the axes mean something. Horizontal: distance to “asset prices rise beyond a sustainable value”. Vertical: distance to “an insulated social environment”. Stars mark the definitions.</p>
+        <p class="hint">Sentences near the left are financial; sentences near the bottom are social.</p>
+      </div>
+      <figure><a href="assets/13_definition_axes.webp"><img loading="lazy" src="assets/13_definition_axes.webp" width="1600" height="1231" alt="A plot whose axes are distances to two definitions, with stars marking each definition."></a></figure>
+    </div>
+
+    <div class="step">
+      <div>
+        <h3>How close is each corpus to one definition?</h3>
+        <p>For one definition, see how each corpus is spread around it. For the financial definition, the middle sentence of 1999–2003 sits at a distance of 0.16; by 2024–2026 it is at 0.48.</p>
+        <p class="hint">These are distances, not sense counts. For counts, someone has to decide.</p>
+      </div>
+      <figure><a href="assets/14_definition_distributions.webp"><img loading="lazy" src="assets/14_definition_distributions.webp" width="1600" height="1481" alt="Line chart of each period's distances to the financial definition, with a summary table."></a></figure>
+    </div>
+
+    <div class="part">5 · Annotate</div>
+
+    <div class="step">
+      <div>
+        <h3>Blind annotation, without seeing the corpora</h3>
+        <p>Set your own sense labels. Click a point to label it, or draw a lasso around a group and check it by reading. Blind mode removes the corpus colours and labels, so you cannot label by date.</p>
+        <p class="hint">SemLens never assigns a sense for you.</p>
+      </div>
+      <figure><a href="assets/16_blind_lasso.webp"><img loading="lazy" src="assets/16_blind_lasso.webp" width="1600" height="1260" alt="The annotation plot in blind mode, with a group of grey points marked as financial."></a></figure>
+    </div>
+
+    <div class="step">
+      <div>
+        <h3>Visualise annotated sentences</h3>
+        <p>Diamonds show the sense you gave, the dot inside shows the corpus. Where the model's picture and your reading agree, the regions line up; where they do not is where to look.</p>
+        <p class="hint">The labels in this example are an illustration, not a published annotation.</p>
+      </div>
+      <figure><a href="assets/18_annotated_plot.webp"><img loading="lazy" src="assets/18_annotated_plot.webp" width="1600" height="1081" alt="The plot with every sentence outlined by a sense colour."></a></figure>
+    </div>
+
+    <div class="step">
+      <div>
+        <h3>Sense frequencies by corpus</h3>
+        <p>As you annotate, SemLens keeps a table and chart of how often each sense occurs in each corpus. It downloads as a table, and the annotations download with your original columns.</p>
+        <p class="hint">Example labels: the pattern shown is an illustration of the output, not a finding.</p>
+      </div>
+      <figure><a href="assets/19_sense_percentages.webp"><img loading="lazy" src="assets/19_sense_percentages.webp" width="1600" height="1136" alt="A table and stacked bar chart of sense shares in each period."></a></figure>
+    </div>
+  </div>
+</section>
+
+<section id="help">
+  <div class="wrap">
+    <h2>Questions, problems, citing</h2>
+    <p class="intro">If something does not work or is unclear, email Roksana Goworek at <a href="mailto:r.goworek@qmul.ac.uk">r.goworek@qmul.ac.uk</a> or <a href="https://github.com/roksanagow/SemLens/issues">open an issue on GitHub</a>.</p>
+    <p>The AMD and SAMD scores and definition space are described in:</p>
+<div class="cite">@inproceedings{goworek-dubossarsky-2026-rethinking,
+    title = "Rethinking Metrics for Lexical Semantic Change Detection",
+    author = "Goworek, Roksana and Dubossarsky, Haim",
+    booktitle = "Proceedings of the 6th International Workshop on Computational Approaches to Language Change (LChange'26)",
+    year = "2026",
+    pages = "147--161",
+    url = "https://aclanthology.org/2026.lchange-1.13",
+}</div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">SemLens is open source under the MIT licence · <a href="https://github.com/roksanagow/SemLens">github.com/roksanagow/SemLens</a></div>
+</footer>
+
+<script>
+  document.querySelectorAll('.code button').forEach(function (button) {
+    button.addEventListener('click', function () {
+      var text = button.parentElement.querySelector('pre').innerText;
+      navigator.clipboard.writeText(text).then(function () {
+        button.textContent = 'Copied';
+        setTimeout(function () { button.textContent = 'Copy'; }, 1600);
+      });
+    });
+  });
+</script>
+</body>
+</html>

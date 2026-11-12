@@ -1,5 +1,7 @@
 # SemLens
 
+> **New here?** The [SemLens page](https://roksanagow.github.io/SemLens/) walks through setup and the tool with screenshots.
+>
 > Problems or questions? Email Roksana Goworek at [r.goworek@qmul.ac.uk](mailto:r.goworek@qmul.ac.uk) or [open an issue](https://github.com/roksanagow/SemLens/issues).
 
 Interactive exploration of word meaning across **one to ten corpora**, using contextual embeddings, definitions, usage comparisons and human sense annotation.
