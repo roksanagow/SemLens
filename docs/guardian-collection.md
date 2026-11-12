@@ -1,6 +1,6 @@
 # Collecting the Guardian “bubble” mini-corpora
 
-The first pilot collection is complete: **350 occurrences from 350 articles**, split equally across seven time bins. Files are available locally in `.semlens/datasets/guardian_bubble/`. Use `bubble_usages.csv` for SemLens or extract `guardian_bubble_mini_corpora.zip` for the CSV, seven text mini-corpora and review notes. New live collection requires a Guardian developer API key; cached responses can be reused.
+The first pilot collection is complete: **350 occurrences from 350 articles**, split equally across seven time bins. The collection files are kept locally in `.semlens/datasets/guardian_bubble/`. The usage table for SemLens has since been moved into the repository as `testing_texts/bubble_usages.csv`; the note on redistribution at the end of this page applies to that copy too. New live collection requires a Guardian developer API key; cached responses can be reused.
 
 ## Pilot collected on 10 November 2026
 
@@ -83,7 +83,7 @@ Everything is saved under `.semlens/datasets/guardian_bubble/` by default, outsi
 | `cache/` | Successful API responses, request parameters without the key, and retrieval timestamps |
 | `run.json` | Configuration used to protect against mixing different runs |
 
-**Recommended:** choose **Upload CSV / TSV** in SemLens, enter `bubble` as the target and `bubbles` as another form, then upload `bubble_usages.csv`. This preserves the intended 50 selected occurrences per complete bin and exact sentence boundaries. The `.txt` files are convenient, but the app may find additional occurrences in a sentence and applies its own sentence splitter.
+**Recommended:** choose **Upload CSV / TSV** in SemLens, enter `bubble` as the target and `bubbles` as another form, then upload `bubble_usages.csv` (now at `testing_texts/bubble_usages.csv`). Its date, title, section, publication, byline and URL columns are kept and returned in the annotation export. This preserves the intended 50 selected occurrences per complete bin and exact sentence boundaries. The `.txt` files are convenient, but the app may find additional occurrences in a sentence and applies its own sentence splitter.
 
 Inspect the summaries for bins with fewer than the requested number of usages. Review sentence boundaries, source dates, sections and a selection of articles before presenting: splitting is heuristic, republication can affect dates, and the sense distribution is deliberately not predetermined.
 

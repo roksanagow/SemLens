@@ -106,8 +106,8 @@ def compute_per_definition_metrics(def_space_c1: Tensor, def_space_c2: Tensor, d
     for k, label in enumerate(definition_labels):
         a, b = def_space_c1[:, k:k+1], def_space_c2[:, k:k+1]
         metrics = compute_all_metrics(a, b, corpus_labels, distance="absolute")
-        records.append({"definition": label, "dim": k,
-                        **{key: val for key, val in metrics.items() if key not in {"apd", "prt"}},
+        # On one scalar dimension PRT is the absolute difference between the corpus means.
+        records.append({"definition": label, "dim": k, **metrics,
                         f"avg_cos_dist_{c1}": a.mean().item(), f"avg_cos_dist_{c2}": b.mean().item(),
                         "mean_distance_difference": b.mean().item() - a.mean().item()})
     df = pd.DataFrame(records)
@@ -161,3 +161,10 @@ def nearest_counterparts(a: Tensor, b: Tensor, distance="cosine") -> tuple[pd.Da
                              "counterpart_index": indices.cpu().numpy(), "distance": values.cpu().numpy()}) \
             .sort_values("distance", ascending=False, kind="stable").reset_index(drop=True)
     return records(d), records(d.T)
+
+
+def closest_usages(query: Tensor, candidates: Tensor, k: int = 3, distance="cosine") -> tuple[np.ndarray, np.ndarray]:
+    """Positions and distances of the ``k`` candidates closest to one usage, nearest first."""
+    d = _pairwise_distance(query.reshape(1, -1), candidates, distance)[0]
+    order = torch.argsort(d, stable=True)[:max(1, int(k))]
+    return order.cpu().numpy(), d[order].cpu().numpy()

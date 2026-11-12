@@ -236,15 +236,82 @@ def wrap_hover_html(text: str, width: int = 75, spans: Sequence[tuple[int, int]]
 def format_hover_text(
     sentence: str,
     word: str,
-    corpus: str,
+    corpus: str | None,
     max_line_length: int = 75,
     nearest_definition: str | None = None,
     char_span: tuple[int, int] | None = None,
 ) -> str:
-    """Build a rich hover string for a single usage point."""
+    """Build a rich hover string for a single usage point.
+
+    Pass ``corpus=None`` to leave the corpus out, as blind annotation does.
+    """
     spans=[char_span] if char_span is not None else [m.span() for m in re.finditer(rf'\b{re.escape(word)}\b',sentence,re.IGNORECASE)]
     text=wrap_hover_html(sentence,max_line_length,spans)
-    parts = [f"<b>[{wrap_hover_html(corpus,max_line_length)}]</b><br>{text}"]
+    parts = [text if corpus is None else f"<b>[{wrap_hover_html(corpus,max_line_length)}]</b><br>{text}"]
     if nearest_definition:
         parts.append(f"<br><i>{wrap_hover_html('Nearest definition: '+nearest_definition,max_line_length)}</i>")
     return "".join(parts)
+
+
+def usage_search_pattern(query: str) -> re.Pattern | None:
+    """Compile a usage search: whole words or phrases, case insensitive.
+
+    Commas separate alternatives, and a trailing ``*`` matches any word ending:
+    ``AI, dot-com, specul*`` finds "AI", "dot-com", "speculation" and
+    "speculative", but not "said" or "again".
+    """
+    terms = []
+    for term in query.split(","):
+        term = " ".join(term.split())
+        if not term.strip("*"):
+            continue
+        prefix = term.endswith("*")
+        body = r"\s+".join(re.escape(part) for part in term.rstrip("*").split())
+        terms.append(rf"(?<!\w){body}" + (r"\w*" if prefix else r"(?!\w)"))
+    return re.compile("|".join(terms), re.IGNORECASE) if terms else None
+
+
+def find_usages(sentences: Sequence[str], query: str) -> list[int]:
+    """Positions of the sentences that contain any of the search terms."""
+    pattern = usage_search_pattern(query)
+    return [] if pattern is None else [i for i, sentence in enumerate(sentences) if pattern.search(sentence)]
+
+
+def keyword_in_context(sentence: str, span: tuple[int, int], width: int = 70) -> tuple[str, str, str]:
+    """Left context, target and right context for a concordance line.
+
+    Contexts are cut to about ``width`` characters at a word boundary, and line
+    breaks become spaces, so every line reads the same way around its target.
+    """
+    start, end = span
+    left = " ".join(sentence[:start].split()) + (" " if sentence[:start][-1:].isspace() else "")
+    right = (" " if sentence[end:][:1].isspace() else "") + " ".join(sentence[end:].split())
+    if len(left) > width:
+        cut = left.find(" ", len(left) - width)
+        left = "…" + left[cut if cut >= 0 else len(left) - width:]
+    if len(right) > width:
+        cut = right.rfind(" ", 0, width + 1)
+        right = right[:cut if cut > 0 else width] + "…"
+    return left, sentence[start:end], right
+
+
+# Ten steps of the viridis scale, leaving out its darkest end so that the
+# earliest corpus still shows on a dark background.
+_VIRIDIS = ["#472d7b", "#3b528b", "#2c728e", "#21918c", "#28ae80", "#5ec962", "#addc30", "#d8e219", "#f0e51f", "#fde725"]
+SEQUENTIAL_PALETTE = "Viridis (sequential, for time order)"
+PALETTES[SEQUENTIAL_PALETTE] = _VIRIDIS
+
+
+def palette_for(name: str | None, count: int) -> list[str]:
+    """``count`` colours from a palette.
+
+    The sequential palette is spread evenly over the corpora, dark to light in
+    corpus order. Other palettes are extended with Tab10 rather than repeated.
+    """
+    if name == SEQUENTIAL_PALETTE and count > 0:
+        if count == 1:
+            return [_VIRIDIS[4]]
+        return [_VIRIDIS[round(i * (len(_VIRIDIS) - 1) / (count - 1))] for i in range(count)]
+    palette = list(get_palette(name))
+    palette += [c for c in get_palette("Tab10 (matplotlib)") if c not in palette]
+    return [palette[i % len(palette)] for i in range(count)]

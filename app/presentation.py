@@ -33,8 +33,10 @@ def apply_theme():
     .stApp [data-testid="stIconMaterial"],
     .stApp button:is([kind="header"],[kind="headerNoPadding"],[kind="tertiary"],[kind="elementToolbar"]),
     .stApp [data-testid="stHeader"] svg {{ color:{text}; fill:currentColor; }}
-    /* Help icons use stroked SVGs: filling them hides the question mark. */
-    .stApp [data-testid="stTooltipIcon"] button {{
+    /* Help icons use stroked SVGs: filling them hides the question mark.
+       A button given help text is wrapped in the same tooltip element, so the
+       icon rules exclude real buttons, which carry a data-testid. */
+    .stApp [data-testid="stTooltipIcon"] button:not([data-testid]) {{
         display:inline-flex; align-items:center; justify-content:center;
         width:24px; height:24px; min-width:24px; padding:0;
         border:1px solid {help_edge}; border-radius:50%;
@@ -47,12 +49,12 @@ def apply_theme():
         width:18px; height:18px; color:inherit !important; fill:none !important; stroke:currentColor !important; stroke-width:2;
     }}
     .stApp [data-testid="stTooltipIcon"] svg circle {{ display:none; }}
-    .stApp [data-testid="stTooltipIcon"] button:is(:hover,:focus-visible) {{
+    .stApp [data-testid="stTooltipIcon"] button:not([data-testid]):is(:hover,:focus-visible) {{
         color:{help_hover_ink}; border-color:{help_hover_edge};
         background:linear-gradient(145deg,{help_hover_top},{help_hover_bottom});
         box-shadow:inset 0 1px 0 #ffffff20,0 0 0 3px #69b58e22;
     }}
-    .stApp [data-testid="stTooltipIcon"] button:focus-visible {{
+    .stApp [data-testid="stTooltipIcon"] button:not([data-testid]):focus-visible {{
         outline:2px solid {help_hover_edge}; outline-offset:3px;
     }}
     /* Streamlit mounts help popups outside .stApp, so theme them explicitly. */
@@ -65,7 +67,7 @@ def apply_theme():
     [data-testid="stTooltipContent"], [data-testid="stTooltipContent"] :is(p,li,strong,em) {{ color:{text}; }}
     [data-testid="stTooltipContent"] a {{ color:{help_ink}; text-decoration:underline; }}
     @media (prefers-reduced-motion:reduce) {{
-        .stApp [data-testid="stTooltipIcon"] button {{ transition:none; }}
+        .stApp [data-testid="stTooltipIcon"] button:not([data-testid]) {{ transition:none; }}
     }}
     .stApp [data-testid="stPlotlyChart"], .stApp .js-plotly-plot {{ background:{bg}; }}
     .stApp code, .stApp [data-testid="stCode"] {{ background:{surface}; color:{text}; }}
@@ -89,12 +91,26 @@ def apply_theme():
         box-shadow:0 3px 14px #0003;
     }}
     .semlens-usage-tooltip[hidden] {{ display:none; }}
+    .semlens-usage-tooltip mark, .semlens-pair-table mark {{
+        background:#fde68a; color:#172033; font-weight:600; border-radius:3px; padding:0 2px;
+    }}
     .semlens-pair-table {{ max-height:430px; overflow-y:auto; border:1px solid var(--sl-border); border-radius:6px; }}
+    /* Compact tables show about three rows and scroll for the rest. */
+    .semlens-pair-table.semlens-compact {{ max-height:206px; }}
     .semlens-pair-table table {{ width:100%; table-layout:fixed; border-collapse:collapse; color:var(--sl-text); background:var(--sl-bg); }}
     .semlens-pair-table th {{ position:sticky; top:0; z-index:1; background:var(--sl-surface); text-align:left; font-weight:600; }}
     .semlens-pair-table th, .semlens-pair-table td {{ padding:8px; border-bottom:1px solid var(--sl-border); vertical-align:top; }}
     .semlens-pair-table td:first-child {{ font-variant-numeric:tabular-nums; }}
-    .semlens-sentence-cell {{ width:100%; overflow-x:auto; white-space:pre; padding-bottom:5px; scrollbar-width:thin; scrollbar-color:var(--sl-border) var(--sl-surface); }}
+    .semlens-nearest-table td:first-child {{ overflow-wrap:anywhere; }}
+    /* Concordance: the target sits in one column, with its left context ending against it. */
+    .semlens-kwic {{ max-height:520px; }}
+    .semlens-kwic td {{ white-space:pre; overflow:hidden; padding:5px 6px; }}
+    .semlens-kwic td:first-child {{ white-space:normal; overflow-wrap:anywhere; font-variant-numeric:normal; }}
+    .semlens-kwic-left > div {{ display:flex; justify-content:flex-end; overflow:hidden; }}
+    .semlens-kwic-target {{ text-align:center; }}
+    .semlens-kwic-right {{ text-overflow:ellipsis; }}
+    .semlens-nearest-table td:nth-child(2) {{ font-variant-numeric:tabular-nums; }}
+    .semlens-sentence-cell {{ position:relative; width:100%; overflow-x:auto; white-space:pre; padding-bottom:5px; scrollbar-width:thin; scrollbar-color:var(--sl-border) var(--sl-surface); }}
     .semlens-sentence-cell:focus-visible {{ outline:2px solid var(--sl-text); outline-offset:1px; }}
     .semlens-sentence-cell::-webkit-scrollbar {{ height:8px; }}
     .semlens-sentence-cell::-webkit-scrollbar-track {{ background:var(--sl-surface); }}
@@ -117,14 +133,25 @@ def plot_chart(fig, **kwargs):
     fig.update_xaxes(color=text,gridcolor=grid,zerolinecolor=grid)
     fig.update_yaxes(color=text,gridcolor=grid,zerolinecolor=grid)
     fig.update_traces(colorbar_tickfont_color=text,colorbar_title_font_color=text,selector=dict(type='heatmap'))
+    # The camera button saves the figure in the format chosen under display settings:
+    # SVG for print (it scales without blurring), PNG at double size for slides.
+    image={'format':'svg'} if st.session_state.get('figure_format')=='svg' else {'format':'png','scale':2}
+    kwargs.setdefault('config',{'toImageButtonOptions':{**image,'filename':'semlens_figure'},'displaylogo':False})
     return st.plotly_chart(fig,theme=None,**kwargs)
 
 
-def readable_table(frame, *, text_columns=(), **kwargs):
-    """Give complete sentences enough column width; the grid scrolls horizontally."""
+def readable_table(frame, *, text_columns=(), max_text_width=None, **kwargs):
+    """Give complete sentences enough column width; the grid scrolls horizontally.
+
+    ``max_text_width`` caps and pins the text columns instead, so the numeric
+    columns beside them stay in view; the full text opens from the cell.
+    """
     config={}
     for name in text_columns:
         if name in frame:
+            if max_text_width:
+                config[name]=st.column_config.TextColumn(name,width=int(max_text_width),pinned=True)
+                continue
             # A conservative character width also accommodates non-Latin scripts.
             length=max((len(str(v).expandtabs(4)) for v in frame[name]),default=len(name))
             config[name]=st.column_config.TextColumn(name,width=max(320,16*length+40))
@@ -134,22 +161,68 @@ def readable_table(frame, *, text_columns=(), **kwargs):
     st.dataframe(frame,hide_index=True,width='stretch',column_config=config,**kwargs)
 
 
-def sentence_pair_html(frame):
-    """Fixed columns with separately scrollable cells; escape every input string."""
+def _sentence_cell(label,sentence,span=None):
+    """One scrolling line of escaped text, with the target occurrence highlighted when its span is given."""
+    sentence=str(sentence)
+    if span is not None and 0<=span[0]<span[1]<=len(sentence):
+        start,end=int(span[0]),int(span[1])
+        text=html.escape(sentence[:start])+'<mark>'+html.escape(sentence[start:end])+'</mark>'+html.escape(sentence[end:])
+    else:
+        text=html.escape(sentence)
+    return (f'<td><div class="semlens-sentence-cell" tabindex="0" role="region" '
+            f'aria-label="{html.escape(label)}: scroll horizontally">{text}</div></td>')
+
+
+def sentence_pair_html(frame, *, compact=False):
+    """Fixed columns with separately scrollable cells; escape every input string.
+
+    Optional ``Usage span`` and ``Counterpart span`` columns hold each target's
+    (start, end), which is then highlighted in its sentence.
+    """
     rows=[]
-    for row in frame.itertuples(index=False,name=None):
-        distance,usage,counterpart=row
+    spans=[frame[name].tolist() if name in frame else [None]*len(frame) for name in ('Usage span','Counterpart span')]
+    for position,(distance,usage,counterpart) in enumerate(frame[['Distance','Usage','Closest counterpart']].itertuples(index=False,name=None)):
         cells=[f'<td>{float(distance):.6g}</td>']
-        for label,sentence in [('Usage',usage),('Closest counterpart',counterpart)]:
-            cells.append(f'<td><div class="semlens-sentence-cell" tabindex="0" role="region" aria-label="{label}: scroll horizontally">{html.escape(str(sentence))}</div></td>')
+        for label,sentence,span in [('Usage',usage,spans[0][position]),('Closest counterpart',counterpart,spans[1][position])]:
+            cells.append(_sentence_cell(label,sentence,span))
         rows.append('<tr>'+''.join(cells)+'</tr>')
-    return ('<div class="semlens-pair-table"><table aria-label="Ranked nearest counterparts">'
+    # Keep the plain class attribute for non-compact tables.
+    classes='semlens-pair-table semlens-compact' if compact else 'semlens-pair-table'
+    return (f'<div class="{classes}"><table aria-label="Ranked nearest counterparts">'
             '<colgroup><col style="width:90px"><col><col></colgroup>'
             '<thead><tr><th scope="col">Distance</th><th scope="col">Usage</th><th scope="col">Closest counterpart</th></tr></thead>'
             '<tbody>'+''.join(rows)+'</tbody></table></div>')
 
 
-def sentence_pair_table(frame, *, key):
+def nearest_usage_html(frame):
+    """Closest usages to one chosen sentence, grouped by corpus; every string is escaped."""
+    rows=[]
+    spans=frame['Span'].tolist() if 'Span' in frame else [None]*len(frame)
+    for (corpus,distance,sentence),span in zip(frame[['Corpus','Distance','Closest usage']].itertuples(index=False,name=None),spans):
+        rows.append(f'<tr><td>{html.escape(str(corpus))}</td><td>{float(distance):.6g}</td>'
+                    +_sentence_cell('Closest usage',sentence,span)+'</tr>')
+    return ('<div class="semlens-pair-table semlens-nearest-table"><table aria-label="Closest usages in each other corpus">'
+            '<colgroup><col style="width:150px"><col style="width:90px"><col></colgroup>'
+            '<thead><tr><th scope="col">Corpus</th><th scope="col">Distance</th><th scope="col">Closest usage</th></tr></thead>'
+            '<tbody>'+''.join(rows)+'</tbody></table></div>')
+
+
+def concordance_html(lines):
+    """Keyword-in-context lines: corpus, left context, target, right context; every string is escaped."""
+    rows=[]
+    for corpus,left,target,right in lines:
+        rows.append(f'<tr><td>{html.escape(str(corpus))}</td>'
+                    f'<td class="semlens-kwic-left"><div>{html.escape(left)}</div></td>'
+                    f'<td class="semlens-kwic-target"><mark>{html.escape(target)}</mark></td>'
+                    f'<td class="semlens-kwic-right">{html.escape(right)}</td></tr>')
+    return ('<div class="semlens-pair-table semlens-kwic"><table aria-label="Concordance of loaded occurrences">'
+            '<colgroup><col style="width:130px"><col><col style="width:110px"><col></colgroup>'
+            '<thead><tr><th scope="col">Corpus</th><th scope="col" style="text-align:right">Before</th>'
+            '<th scope="col" style="text-align:center">Target</th><th scope="col">After</th></tr></thead>'
+            '<tbody>'+''.join(rows)+'</tbody></table></div>')
+
+
+def sentence_pair_table(frame, *, key, compact=False):
     if frame.empty:
         st.caption('No matching pairs.')
         return
@@ -159,4 +232,4 @@ def sentence_pair_table(frame, *, key):
                                  key=f'{key}_{len(frame)}',help='50 pairs per page. The ranking and search cover all pairs.'))
         start=(page-1)*50
         st.caption(f'Pairs {start+1:,}–{min(start+50,len(frame)):,} of {len(frame):,}')
-    st.html(sentence_pair_html(frame.iloc[(page-1)*50:page*50]))
+    st.html(sentence_pair_html(frame.iloc[(page-1)*50:page*50],compact=compact))

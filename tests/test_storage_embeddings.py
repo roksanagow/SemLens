@@ -55,6 +55,20 @@ def test_long_context_layer_and_sentence_modes(encoder):
     assert sentence_emb.metadata['representation']=='sentence'
 
 
+def test_negative_layers_count_back_from_the_final_output(encoder):
+    data=load_from_sentences(['The bank was steep.','A bank holiday.'],'bank',['old','new'])
+    # This encoder has two transformer layers: hidden states 0 (input), 1 and 2.
+    by_layer={layer:embed_usages(encoder,data,layer=layer) for layer in (-3,-2,-1,0,1,2)}
+    torch.testing.assert_close(by_layer[-2].embeddings,by_layer[1].embeddings)
+    torch.testing.assert_close(by_layer[-3].embeddings,by_layer[0].embeddings)
+    assert not torch.allclose(by_layer[-2].embeddings,by_layer[-1].embeddings)
+    assert by_layer[-2].metadata['layer']==-2
+    assert by_layer[-2].metadata['hidden_state_source']=='hidden_states[-2]'
+    for layer in (-4,3):
+        with pytest.raises(ValueError,match='layers 0 .* to 2; negative values count back'):
+            embed_usages(encoder,data,layer=layer)
+
+
 def test_cache_persists_text_and_supports_new_targets_without_encoder(encoder,tmp_path,monkeypatch):
     texts={'earlier':'The bank of the river was steep. They run along the river.',
            'later':'The bank approved a loan. A runner runs past the bank.'}
@@ -174,3 +188,42 @@ def test_token_cache_on_supplied_text_excerpts(encoder,tmp_path):
     assert len(data.corpus_labels)==2
     direct=embed_usages(encoder,data,max_length=64)
     torch.testing.assert_close(cached.embeddings,direct.embeddings,atol=2e-6,rtol=2e-6)
+
+
+def test_target_markers_are_applied_to_word_embeddings_when_the_model_has_them():
+    from semlens.embeddings import mark_target,supports_target_markers,extract_word_embeddings
+    assert mark_target('The dot-com bubble burst.',(12,18))==('The dot-com <t>bubble</t> burst.',(15,21))
+    try:
+        model=load_model('google/bert_uncased_L-2_H-128_A-2',device='cpu',local_files_only=True)
+    except (OSError,ValueError):
+        pytest.skip('Optional cached encoder unavailable; no network download is performed')
+    data=load_from_sentences(['The river bank was steep and the bank was shut.','A bank holiday.'],'bank',['old','new'])
+    assert not supports_target_markers(model)
+    plain=embed_usages(model,data)
+    assert plain.metadata['target_markers'] is False
+    with pytest.raises(ValueError,match='no <t> and </t>'):
+        embed_usages(model,data,target_markers=True)
+    # Give the small encoder the two marker tokens XL-LEXEME has.
+    model.tokenizer.add_tokens(['<t>','</t>'],special_tokens=True)
+    model.model.resize_token_embeddings(len(model.tokenizer))
+    assert supports_target_markers(model)
+    marked=embed_usages(model,data)
+    assert marked.metadata['target_markers'] is True and marked.embeddings.shape==plain.embeddings.shape
+    assert not torch.allclose(marked.embeddings,plain.embeddings,atol=1e-4)
+    # The marked input is what the encoder sees, and the vector is the target's own tokens.
+    text,span=mark_target(data.sentences[2],data.char_spans[2])
+    direct=extract_word_embeddings(model,[text],[span],target_markers=False)
+    torch.testing.assert_close(marked.embeddings[2:3],direct,atol=1e-5,rtol=1e-4)
+    # Two targets in one sentence are marked separately.
+    assert not torch.allclose(marked.embeddings[0],marked.embeddings[1],atol=1e-4)
+    # Switching markers off, or asking for sentence vectors, encodes the plain sentence.
+    torch.testing.assert_close(embed_usages(model,data,target_markers=False).embeddings,plain.embeddings,atol=1e-5,rtol=1e-4)
+    sentence=embed_usages(model,data,representation='sentence')
+    assert sentence.metadata['target_markers'] is False
+    # Definitions mark the word the template adds, never a word inside the gloss.
+    with_markers=embed_definitions(model,'bank',['bank: the bank of a river'],target_markers=True)
+    text,span=mark_target('bank: the bank of a river',(0,4))
+    assert text=='<t>bank</t>: the bank of a river'
+    torch.testing.assert_close(with_markers,extract_word_embeddings(model,[text],[span],target_markers=False),atol=1e-5,rtol=1e-4)
+    without=embed_definitions(model,'bank',['bank: the bank of a river'])
+    assert not torch.allclose(with_markers,without,atol=1e-4)

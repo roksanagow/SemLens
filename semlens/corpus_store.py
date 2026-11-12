@@ -62,10 +62,12 @@ def format_bytes(size: int) -> str:
 
 def create_corpus_cache(root: str | Path, name: str, texts: dict[str,str], loaded_model: LoadedModel, *,
                          storage="tokens", dtype="float32", layer=-1, max_length=256, batch_size=16,
-                         lines=False, progress_callback=None, estimate: StorageEstimate | None = None) -> Path:
+                         lines=False, split: str | None = None, progress_callback=None,
+                         estimate: StorageEstimate | None = None) -> Path:
     if not name.strip():
         raise ValueError("Give the saved corpora a name.")
-    records = corpus_sentences(texts, lines=lines)
+    split = split or ("lines" if lines else "auto")
+    records = corpus_sentences(texts, split=split)
     metadata = model_metadata(loaded_model, layer=layer, max_length=max_length)
     if estimate is None:
         estimate = estimate_storage(records, loaded_model.tokenizer, metadata['dimension'], dtype=dtype, storage=storage,
@@ -118,7 +120,7 @@ def create_corpus_cache(root: str | Path, name: str, texts: dict[str,str], loade
             position += count
         info = {"schema_version": SCHEMA_VERSION, "name": name.strip(), "storage": storage, "dtype": dtype,
                 "model": metadata, "sentences": len(records), "vectors": position, "capacity": capacity,
-                "corpus_order": list(texts), "splitter": "lines_v1" if lines else "punctuation_v1"}
+                "corpus_order": list(texts), "splitter": {"lines": "lines_v1", "paragraphs": "paragraphs_v1"}.get(split, "punctuation_v2")}
         connection.execute('INSERT INTO metadata VALUES (?,?)',('info',json.dumps(info)))
         connection.commit()
         connection.close()
@@ -176,12 +178,13 @@ class CorpusCache:
         with closing(self._connect()) as con:
             return dict(con.execute('SELECT name,source_text FROM corpora ORDER BY position'))
 
-    def select(self, word: str, forms=None, *, representation="word", pooling="mean", max_per_corpus=0, seed=42):
+    def select(self, word: str, forms=None, *, representation="word", pooling="mean", max_per_corpus=0, seed=42,
+               match_case=False):
         if representation == 'word' and self.offsets is None:
             raise ValueError("This cache contains sentence vectors only. Create a token cache for word representations.")
         if representation not in {'word','sentence'}:
             raise ValueError("Choose word or sentence representations.")
-        data = select_usages(self.sentences,word,forms)
+        data = select_usages(self.sentences,word,forms,match_case=match_case)
         if max_per_corpus:
             rng=np.random.default_rng(seed)
             kept=[]

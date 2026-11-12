@@ -65,6 +65,24 @@ def remove_sense_class(name):
     _store()['history']=[]
 
 
+def rename_sense_class(old, new):
+    """Rename a class; renaming onto an existing class merges the two."""
+    new = new.strip()
+    classes = get_sense_classes()
+    if not new or old not in classes or new == old:
+        return
+    remember_annotations()
+    if new in classes:
+        classes.remove(old)
+    else:
+        classes[classes.index(old)] = new
+    for idx, label in get_annotations().items():
+        if label == old:
+            get_annotations()[idx] = new
+    if get_active_sense_class() == old:
+        set_active_sense_class(new)
+
+
 def restore_annotations(annotations, sense_classes=None):
     _store()['annotations']={int(k):v for k,v in annotations.items()}
     if sense_classes is not None:

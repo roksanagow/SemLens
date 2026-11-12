@@ -46,6 +46,33 @@
 - [x] Investigate newspapers for a broader “bubble” timeline including literal, financial, Covid and AI uses (user steering, 10 November 2026); record public sources and a proposed timeline.
 - [x] Prepare a Guardian API collector with time-bin configuration, seeded article sampling, cached resumable requests, provenance and SemLens-ready CSV/text exports; test extraction, sampling, storage and API error handling offline.
 - [x] Collect the Guardian “bubble” pilot: seven mini-corpora with 50 occurrences from 50 distinct articles each (350 total), source metadata, CSV/text exports and an import ZIP. Validated dates, exact offsets, article IDs, file hashes and SemLens loading. Flagged nine contexts for review without changing the sample. See [collection instructions](docs/guardian-collection.md).
+- [x] Accept negative layer numbers counting back from the final output (`-2` = penultimate); report the available range for an invalid layer.
+- [x] Default **Maximum occurrences per corpus** to `all`, accepting `all` or a positive number.
+- [x] Remember corpora switched off in a plot legend across projections, definition axes, workspaces and annotation actions; leave them out of selection.
+- [x] AMD inspector: choose the corpus pair inside the panel (scores follow), compact three-row scrolling tables, and a closest-usages lookup for one chosen sentence across the other corpora.
+- [x] Per-definition table: fixed-width pinned definition column, readable score names, and APD/PRT alongside AMD/SAMD (absolute distance, by necessity for scalars).
+- [x] Blind annotation: uniform colour and no corpus in hovers, with corpus names kept in the legend for hiding/showing.
+- [x] Stop the help-icon styling from shrinking buttons that have help text (the sense buttons rendered as 24px circles).
+- [x] Apply XL-LEXEME's `<t>`/`</t>` target markers automatically for word representations and for the template word in definitions; record the setting, with an opt-out. Saved corpus caches stay unmarked.
+- [x] Pool vectors as each sentence is encoded instead of holding every token vector until the end.
+- [x] Keep Manual input definition drafts and the chosen definition source across workspace navigation.
+- [x] Fit distribution bins to the observed distances; print scores in every heatmap cell up to ten corpora.
+- [x] Fit LDA on a limited number of principal components so shuffled corpus labels no longer separate.
+- [x] Refresh the sidebar summary and corpus order immediately after loading data.
+- [x] Definition anchors as `D1`, `D2`, … in the theme's text colour, with full definitions in hovers.
+- [x] Wiktionary: parts of speech with a filter, bracketed usage labels, and German, French, Spanish and Swedish editions.
+- [x] `setup.sh` no longer copies a file that is not in the repository.
+- [x] Sense × corpus frequency table, chart and download in Annotation; type-to-highlight search in the annotation plot.
+- [x] Highlight the target occurrence in hovers and evidence tables; bring it into view in scrolling cells.
+- [x] Keep extra CSV columns as usage metadata in saved analyses and the annotation export.
+- [x] Heatmaps follow corpora switched off in the legend; change-over-time chart for chronological corpora.
+- [x] Full metric names and formulas in help and under heatmaps; projection help; share of variation on PCA axes.
+- [x] Accessibility pass: first-screen guide, glossary, plain-language help on every control, example dataset.
+- [x] Input options: wildcard forms, exact-case matching, context division (sentences, lines, paragraphs; blank lines and common abbreviations handled), other text encodings, texts kept for another word.
+- [x] Review: frequency per million words, word-form counts, sortable and searchable concordance.
+- [x] Model presets; display settings for point size, opacity, sequential palette, figure format, order by name.
+- [x] Plot options: PCA components, UMAP and t-SNE settings following the vector distance, search in every plot, CSV downloads of plot positions, scores and definition distances.
+- [x] Annotation: list (concordance) annotation, remaining-only view, class renaming and merging, annotation import.
 
 ## Discuss before further implementation
 

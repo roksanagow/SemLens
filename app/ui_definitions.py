@@ -7,8 +7,9 @@ import textwrap
 import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
-from semlens.definitions import format_definitions,fetch_wiktionary_definitions,embed_definitions,definition_inputs
+from semlens.definitions import format_definitions,fetch_wiktionary_entries,embed_definitions,definition_inputs
 from semlens.spaces import project_to_definition_space
+from semlens.embeddings import mark_target
 from app.common import get_model
 from app.state import reset_downstream_of
 from app.ui_explore import render_plot,render_comparison,render_definition_distribution
@@ -23,6 +24,10 @@ def _definition_editor_key(origin):
 def _remember_definition_draft(key):
     # Keep drafts outside widget state so navigating away does not discard edits.
     st.session_state.setdefault('_definition_drafts',{})[key]=st.session_state[key]
+
+
+def _flag_pos_change(origin_key):
+    st.session_state[f'_pos_changed_{origin_key}']=True
 
 
 def _edit_definitions(origin,definitions=None,*,replace=False):
@@ -56,31 +61,64 @@ def definition_heatmap(matrix,labels,title):
 
 def render_definitions():
     st.header('Definitions & definition space')
+    st.caption('Write the senses you expect the word to have as short definitions, one per line, or fetch them from a dictionary and edit them. '
+               'The language model reads each definition, and every usage is then described by how far it is from each one. '
+               'The definitions are your hypotheses: change them and create the space again as often as you like.')
     eu=st.session_state.embedded_usages
     if eu is None:
         st.info('Load data and embed usages first.')
         return
     data=st.session_state.target_word_data
-    source=st.selectbox('Definition source',['Manual input','Wiktionary','JSON file'])
+    sources=['Manual input','Wiktionary','JSON file']
+    remembered=st.session_state.get('_definition_source')
+    source=st.selectbox('Definition source',sources,index=sources.index(remembered) if remembered in sources else 0)
+    st.session_state['_definition_source']=source
     raw=[]
     if source=='Manual input':
-        raw=[s.strip() for s in st.text_area('One definition per line',value='\n'.join(st.session_state.definitions_raw),
-                                             height=160,key=f'def_text_{data.word}_{st.session_state.data_revision}').splitlines() if s.strip()]
+        # Typed definitions are kept as a draft, like fetched ones, so leaving
+        # the workspace before creating the space does not discard them.
+        key=f'def_text_{data.word}_{st.session_state.data_revision}'
+        drafts=st.session_state.setdefault('_definition_drafts',{})
+        drafts.setdefault(key,'\n'.join(st.session_state.definitions_raw))
+        if key not in st.session_state:
+            st.session_state[key]=drafts[key]
+        raw=[s.strip() for s in st.text_area('One definition per line',height=160,key=key,
+                                             on_change=_remember_definition_draft,args=(key,)).splitlines() if s.strip()]
     elif source=='Wiktionary':
         with st.expander('Dictionary settings'):
-            edition=st.text_input('Wiktionary edition',value='en')
-            language=st.text_input('Language section heading',value='English',help='The exact section heading in that Wiktionary edition, for example English on en.wiktionary.org.')
+            edition=st.text_input('Wiktionary edition',value='en',
+                                  help='The language code of the Wiktionary to read: en, de, fr, es, sv, … Definitions are written in that edition’s language.')
+            language=st.text_input('Language section heading',value='English',
+                                   help='The heading of the language section to read, as that edition writes it: English or German on en.wiktionary.org, '
+                                        'Deutsch on de.wiktionary.org. If no section has this heading, the edition’s own language is read. '
+                                        'For definitions of a non-English word written in English, keep the en edition and enter the language here.')
         origin=('wiktionary',data.word,edition,language)
-        fetched=None
+        origin_key=_definition_editor_key(origin)
+        entries_by_origin=st.session_state.setdefault('_wiktionary_entries',{})
         replace=False
         if st.button('Fetch definitions'):
             try:
-                fetched=fetch_wiktionary_definitions(data.word,language=edition,target_language_name=language)
+                entries_by_origin[origin_key]=[tuple(entry) for entry in fetch_wiktionary_entries(data.word,language=edition,target_language_name=language)]
+                st.session_state.pop(f'wiktionary_pos_{origin_key}',None)
                 replace=True
-                if not fetched:
-                    st.warning('No definitions found for that language section. You can enter definitions below.')
+                if not entries_by_origin[origin_key]:
+                    st.warning('No definitions found for that language section. Check the edition and section heading under Dictionary settings, or enter definitions below.')
             except Exception as exc:
                 st.error(str(exc))
+        entries=entries_by_origin.get(origin_key)
+        fetched=None
+        if entries is not None:
+            kinds=list(dict.fromkeys(kind for kind,_ in entries))
+            chosen=kinds
+            if len(kinds)>1:
+                chosen=st.multiselect('Parts of speech to include',kinds,default=kinds,key=f'wiktionary_pos_{origin_key}',
+                                      on_change=_flag_pos_change,args=(origin_key,),
+                                      help='The dictionary lists every part of speech together. Removing one here rebuilds the list below, replacing any edits.')
+                replace=replace or st.session_state.pop(f'_pos_changed_{origin_key}',False)
+            fetched=[definition for kind,definition in entries if kind in chosen]
+            counts=', '.join(f'{sum(k==kind for k,_ in entries)} {kind.lower()}' for kind in kinds)
+            if entries:
+                st.caption(f'Fetched {len(entries)} definitions ({counts}). Usage labels such as (figurative) or (economics) are kept in brackets; delete any you do not want embedded.')
         legacy=st.session_state.pop('_fetched_definitions',None)
         if fetched is None and legacy and legacy[0]==data.word:
             fetched=legacy[1]
@@ -121,11 +159,15 @@ def render_definitions():
         if not model_id:
             model_id=st.text_input('Original embedding model ID',help='Use the encoder that produced the uploaded usage vectors.')
         layer=int(eu.metadata.get('layer',-1))
+        # Definitions are marked exactly when the usages were, so both sit in the same space.
+        markers=bool(eu.metadata.get('target_markers')) and readout=='word'
         st.caption(f'Model: {model_id or "not specified"} · Layer: {layer}')
         if raw:
             try:
                 preview,spans=definition_inputs(data.word,raw[:1],template=template,readout=readout)
-                st.code(preview[0],language=None)
+                st.code(mark_target(preview[0],spans[0])[0] if markers else preview[0],language=None)
+                if markers:
+                    st.caption('The usages were embedded with XL-LEXEME target markers, so the word added by the template is marked in the same way. A word inside the definition text is never marked.')
             except ValueError as exc:
                 st.info(str(exc))
     if st.button('Create definition space',type='primary'):
@@ -140,7 +182,7 @@ def render_definitions():
             with st.spinner('Embedding definitions…'):
                 model=get_model(model_id,eu.metadata.get('revision'))
                 vectors=embed_definitions(model,data.word,formatted,layer=layer,template=template,readout=readout,
-                                         max_length=int(eu.metadata.get('max_length',256)))
+                                         max_length=int(eu.metadata.get('max_length',256)),target_markers=markers)
                 if vectors.shape[1]!=eu.dim:
                     raise ValueError('The selected model does not match the uploaded embedding dimensions.')
                 projected=project_to_definition_space(eu.embeddings,vectors)
@@ -149,7 +191,7 @@ def render_definitions():
             st.session_state.definitions_formatted=formatted
             st.session_state.definition_embeddings=vectors
             st.session_state.def_space_all=projected
-            st.session_state.definition_settings={'template':template,'readout':readout,'model_id':model.name,'layer':layer}
+            st.session_state.definition_settings={'template':template,'readout':readout,'model_id':model.name,'layer':layer,'target_markers':markers}
             st.success(f'Created {len(formatted)} definition dimensions.')
         except Exception as exc:
             st.error(str(exc))

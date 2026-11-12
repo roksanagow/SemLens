@@ -18,6 +18,9 @@ MAX_CORPORA = 10
 def normalise_forms(word: str, forms: Sequence[str] | None = None) -> list[str]:
     if not word.strip():
         raise ValueError("Enter a target word.")
+    if "*" in word:
+        raise ValueError("Enter the target word in full, and put patterns such as run* under Other forms. "
+                         "The target word is the name used in definitions and file names.")
     result = []
     seen = set()
     for form in [word, *(forms or [])]:
@@ -28,11 +31,25 @@ def normalise_forms(word: str, forms: Sequence[str] | None = None) -> list[str]:
     return result
 
 
-def find_occurrences(sentence: str, word: str, forms: Sequence[str] | None = None):
-    """Find every explicit form, case insensitively, including repeated occurrences."""
+def occurrence_pattern(word: str, forms: Sequence[str] | None = None, *, match_case: bool = False) -> re.Pattern:
+    """Whole-word pattern for the target and its forms.
+
+    A form ending in ``*`` matches any ending (``bubbl*`` finds bubble, bubbles,
+    bubbling). Matching ignores case unless ``match_case`` is set.
+    """
     variants = sorted(normalise_forms(word, forms), key=len, reverse=True)
-    pattern = re.compile(r"(?<!\w)(?:" + "|".join(re.escape(v) for v in variants) + r")(?!\w)", re.IGNORECASE)
-    return [(m.start(), m.end()) for m in pattern.finditer(sentence)]
+    parts = []
+    for variant in variants:
+        stem = variant.rstrip("*")
+        if not stem:
+            raise ValueError("A form cannot be only an asterisk.")
+        parts.append(re.escape(stem) + (r"\w*" if variant.endswith("*") else ""))
+    return re.compile(r"(?<!\w)(?:" + "|".join(parts) + r")(?!\w)", 0 if match_case else re.IGNORECASE)
+
+
+def find_occurrences(sentence: str, word: str, forms: Sequence[str] | None = None, *, match_case: bool = False):
+    """Find every form as a whole word, including repeated occurrences."""
+    return [(m.start(), m.end()) for m in occurrence_pattern(word, forms, match_case=match_case).finditer(sentence)]
 
 
 @dataclass
@@ -43,6 +60,9 @@ class UsageInstance:
     char_end: int
     corpus: str
     sentence_id: str = ""
+    # Extra columns from a usage table (date, title, URL, …). Carried into saved
+    # analyses and the annotation export; not part of the usage's identity.
+    metadata: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if not isinstance(self.sentence, str) or not self.sentence.strip():
@@ -125,17 +145,82 @@ def validate_corpus_names(names: Sequence[str]):
         raise ValueError("Corpus names must be non-empty and unique.")
 
 
+# A full stop after one of these does not end a sentence.
+_ABBREVIATION = re.compile(r"(?:^|[\s(\[\"'“‘])(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|vs|cf|e\.g|i\.e)\.$", re.IGNORECASE)
+_NUMBERED = re.compile(r"(?:^|[\s(\[])(?:No|Nos|Fig|Figs|Vol|pp?|ch)\.$", re.IGNORECASE)
+
+SPLIT_MODES = ("auto", "lines", "paragraphs")
+
+
+def _paragraphs(text: str) -> list[str]:
+    """Blocks separated by a blank line; a line break inside a block is a space."""
+    blocks = re.split(r"\n[ \t\r]*\n", text.lstrip("\ufeff").replace("\r\n", "\n"))
+    return [block for block in (re.sub(r"\s+", " ", b).strip() for b in blocks) if block]
+
+
 def _split_into_sentences(text: str) -> list[str]:
-    """Lightweight punctuation splitter; no text is discarded for being short."""
-    text = re.sub(r"\s+", " ", text.lstrip("\ufeff")).strip()
-    return [s.strip() for s in re.split(r'(?<=[.!?])\s+|(?<=[。！？])', text) if s.strip()]
+    """Lightweight punctuation splitter; no text is discarded for being short.
+
+    A blank line always ends a sentence, so a heading does not run into the
+    paragraph below it. Titles (Mr., Dr.), e.g./i.e. and numbered references
+    (No. 10, Fig. 2) do not.
+    """
+    sentences = []
+    for paragraph in _paragraphs(text):
+        pieces = [s.strip() for s in re.split(r'(?<=[.!?])\s+|(?<=[。！？])', paragraph) if s.strip()]
+        merged: list[str] = []
+        for piece in pieces:
+            previous = merged[-1] if merged else ""
+            if previous and (_ABBREVIATION.search(previous) or (_NUMBERED.search(previous) and piece[:1].isdigit())):
+                merged[-1] = f"{previous} {piece}"
+            else:
+                merged.append(piece)
+        sentences.extend(merged)
+    return sentences
 
 
-def corpus_sentences(texts: dict[str, str], *, lines: bool = False) -> list[CorpusSentence]:
+def decode_text(content: bytes) -> tuple[str, str]:
+    """Decode an uploaded text file, returning the text and the encoding that worked.
+
+    UTF-8 first, then UTF-16 when the file starts with its byte-order mark, then
+    Windows-1252, which older word processors and corpus tools still write.
+    """
+    if content[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return content.decode("utf-16"), "UTF-16"
+    try:
+        return content.decode("utf-8-sig"), "UTF-8"
+    except UnicodeDecodeError:
+        pass
+    try:
+        return content.decode("cp1252"), "Windows-1252"
+    except UnicodeDecodeError:
+        return content.decode("latin-1"), "Latin-1"
+
+
+def count_words(text: str) -> int:
+    """Running words in a text, for frequencies per million."""
+    return len(re.findall(r"\w+(?:[-'’]\w+)*", text))
+
+
+def corpus_sentences(texts: dict[str, str], *, lines: bool = False, split: str | None = None) -> list[CorpusSentence]:
+    """Divide each corpus into the contexts a usage is read in.
+
+    ``split`` is ``"auto"`` (sentence punctuation), ``"lines"`` (one context per
+    line) or ``"paragraphs"`` (one context per block separated by a blank line).
+    ``lines=True`` is the older spelling of ``split="lines"``.
+    """
+    split = split or ("lines" if lines else "auto")
+    if split not in SPLIT_MODES:
+        raise ValueError("Divide text by auto, lines or paragraphs.")
     validate_corpus_names(list(texts))
     records = []
     for corpus, text in texts.items():
-        sentences = [s.strip() for s in text.splitlines() if s.strip()] if lines else _split_into_sentences(text)
+        if split == "lines":
+            sentences = [s.strip() for s in text.splitlines() if s.strip()]
+        elif split == "paragraphs":
+            sentences = _paragraphs(text)
+        else:
+            sentences = _split_into_sentences(text)
         if not sentences:
             raise ValueError(f"Corpus {corpus!r} has no sentences.")
         for i, sentence in enumerate(sentences):
@@ -144,11 +229,13 @@ def corpus_sentences(texts: dict[str, str], *, lines: bool = False) -> list[Corp
     return records
 
 
-def select_usages(records: Sequence[CorpusSentence], word: str, forms: Sequence[str] | None = None) -> TargetWordData:
+def select_usages(records: Sequence[CorpusSentence], word: str, forms: Sequence[str] | None = None, *,
+                  match_case: bool = False) -> TargetWordData:
     usages = []
+    pattern = occurrence_pattern(word, forms, match_case=match_case)
     for r in records:
-        for start, end in find_occurrences(r.sentence, word, forms):
-            usages.append(UsageInstance(r.sentence, word, start, end, r.corpus, r.sentence_id))
+        for match in pattern.finditer(r.sentence):
+            usages.append(UsageInstance(r.sentence, word, match.start(), match.end(), r.corpus, r.sentence_id))
     if not usages:
         raise ValueError(f"No sentences containing {', '.join(normalise_forms(word, forms))!r} found. Add other forms if needed.")
     return TargetWordData(word, usages, list(dict.fromkeys(r.corpus for r in records)), list(forms or []))
@@ -182,7 +269,7 @@ def load_from_sentences_with_positions(sentences: Sequence[str], word: str, star
 def load_from_csv(path: str | Path | TextIO, word: str, *, sentence_col: str = "sentence",
                   corpus_col: str = "corpus", start_col: str | None = "start", end_col: str | None = "end",
                   delimiter: str | None = None, forms: Sequence[str] | None = None,
-                  all_occurrences: bool = True) -> TargetWordData:
+                  all_occurrences: bool = True, match_case: bool = False) -> TargetWordData:
     if delimiter is None:
         name = str(path) if isinstance(path, (str, Path)) else getattr(path, "name", "")
         delimiter = "\t" if Path(name).suffix.lower() in (".tsv", ".tab") else ","
@@ -196,8 +283,10 @@ def load_from_csv(path: str | Path | TextIO, word: str, *, sentence_col: str = "
     if sentence_col not in rows[0] or corpus_col not in rows[0]:
         raise ValueError(f"Required columns: {sentence_col}, {corpus_col}.")
     usages = []
+    reserved = {sentence_col, corpus_col, start_col, end_col, "sentence_id", "matched_form", None, ""}
     for i, row in enumerate(rows):
         sent, corpus = row[sentence_col], row[corpus_col]
+        extra = {key: value for key, value in row.items() if key not in reserved and value not in (None, "")}
         start, end = row.get(start_col, "") if start_col else "", row.get(end_col, "") if end_col else ""
         has_start, has_end = start not in ("", None), end not in ("", None)
         if has_start != has_end:
@@ -208,14 +297,14 @@ def load_from_csv(path: str | Path | TextIO, word: str, *, sentence_col: str = "
             except (TypeError, ValueError):
                 raise ValueError(f"Row {i + 1}: start/end must be integer character offsets.") from None
         else:
-            spans = find_occurrences(sent or "", word, forms)
+            spans = find_occurrences(sent or "", word, forms, match_case=match_case)
             if not spans:
                 raise ValueError(f"Row {i + 1}: target missing; provide offsets or another form.")
             if not all_occurrences and len(spans) != 1:
                 raise ValueError(f"Row {i + 1}: multiple occurrences; supply start/end for pre-computed embeddings.")
         sid = row.get("sentence_id") or str(i)
         for start, end in spans:
-            usages.append(UsageInstance(sent, word, start, end, corpus, sid))
+            usages.append(UsageInstance(sent, word, start, end, corpus, sid, dict(extra)))
     return TargetWordData(word, usages, forms=list(forms or []))
 
 

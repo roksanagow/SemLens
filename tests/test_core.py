@@ -326,3 +326,77 @@ class TestDefinitions:
         assert "[[" not in clean
         assert "{{" not in clean
         assert "''" not in clean
+
+
+# ===== Wiktionary parsing =====
+
+ENGLISH_PAGE = """==English==
+===Etymology===
+# Not a definition, although it is a numbered line.
+===Noun===
+{{en-noun}}
+# A [[spherical]]ly [[contained]] volume of air.<ref>Some source</ref>
+#: {{ux|en|A usage example with a bubble.}}
+## A sub-sense that is left out.
+# {{lb|en|economics}} A period of intense [[speculation]] in a [[market]].
+# {{lb|en|chiefly|COVID-19 pandemic}} A [[quarantine]] environment.
+# {{ellipsis of|en|travel bubble}}.
+===Verb===
+# {{senseid|en|grass}} {{lb|en|transitive|UK|slang}} To [[grass]] ({{l|en|report}} to the authorities).
+==German==
+===Noun===
+# [[blister]]
+"""
+
+
+def test_wiktionary_entries_keep_part_of_speech_and_bracket_labels():
+    from semlens.definitions import _parse_wikitext_entries, _parse_wikitext_definitions
+    entries = _parse_wikitext_entries(ENGLISH_PAGE, "English")
+    assert entries == [
+        ("Noun", "A spherically contained volume of air."),
+        ("Noun", "(economics) A period of intense speculation in a market."),
+        ("Noun", "(chiefly COVID-19 pandemic) A quarantine environment."),
+        ("Noun", "Ellipsis of travel bubble."),
+        ("Verb", "(transitive, UK, slang) To grass (report to the authorities)."),
+    ]
+    assert _parse_wikitext_entries(ENGLISH_PAGE, "German") == [("Noun", "blister")]
+    assert _parse_wikitext_entries(ENGLISH_PAGE, "Klingon") == []
+    assert _parse_wikitext_definitions(ENGLISH_PAGE, "English")[1].startswith("(economics)")
+
+
+def test_wiktionary_entries_from_other_editions():
+    from semlens.definitions import _parse_wikitext_entries
+    german = """== Blase ({{Sprache|Deutsch}}) ==
+=== {{Wortart|Substantiv|Deutsch}}, {{f}} ===
+{{Bedeutungen}}
+:[1] {{K|Physik}} ein [[Gas]] in einer Flüssigkeit
+:[2] {{K|Börse|Wirtschaft}} übertriebene Preise
+{{Herkunft}}
+:[1] keine Bedeutung
+=== {{Wortart|Deklinierte Form|Deutsch}} ===
+{{Bedeutungen}}
+:[1] nicht aufgenommen
+"""
+    assert _parse_wikitext_entries(german, "English", edition="de") == [
+        ("Substantiv", "(Physik) ein Gas in einer Flüssigkeit"), ("Substantiv", "(Börse, Wirtschaft) übertriebene Preise")]
+    french = """== {{langue|fr}} ==
+=== {{S|étymologie}} ===
+: Du latin.
+=== {{S|nom|fr|num=1}} ===
+# Petite [[poche de gaz]] dans un liquide.
+#* {{exemple|lang=fr|Le poisson fait des bulles.}}
+# {{lexique|bande dessinée|fr}} [[phylactère|Phylactère]].
+== {{langue|en}} ==
+=== {{S|nom|en}} ===
+# Autre langue.
+"""
+    assert _parse_wikitext_entries(french, "English", edition="fr") == [
+        ("nom", "Petite poche de gaz dans un liquide."), ("nom", "(bande dessinée) Phylactère.")]
+    spanish = """== {{lengua|es}} ==
+=== Etimología ===
+=== {{sustantivo femenino|es}} ===
+;1: Pequeña [[bola]] de aire.
+;2 {{csem|economía}}: Efecto de la [[especulación]].
+"""
+    assert _parse_wikitext_entries(spanish, "English", edition="es") == [
+        ("sustantivo femenino", "Pequeña bola de aire."), ("sustantivo femenino", "(economía) Efecto de la especulación.")]

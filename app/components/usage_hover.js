@@ -20,12 +20,16 @@
   function content(text) {
     const parsed = new DOMParser().parseFromString(String(text), 'text/html');
     const fragment = document.createDocumentFragment();
-    function copy(node, parent) {
+    function copy(node, parent, first = false) {
       if (node.nodeType === Node.TEXT_NODE) {
         parent.appendChild(document.createTextNode(node.textContent));
       } else if (node.nodeType === Node.ELEMENT_NODE) {
         if (['B', 'I', 'BR'].includes(node.tagName)) {
-          const element = document.createElement(node.tagName.toLowerCase());
+          // The opening "[corpus]" stays bold; any other bold text is the
+          // target occurrence, which is highlighted instead.
+          const header = first && node.textContent.startsWith('[');
+          const tag = node.tagName === 'B' && !header ? 'mark' : node.tagName.toLowerCase();
+          const element = document.createElement(tag);
           parent.appendChild(element);
           node.childNodes.forEach(child => copy(child, element));
         } else {
@@ -33,7 +37,7 @@
         }
       }
     }
-    parsed.body.childNodes.forEach(node => copy(node, fragment));
+    parsed.body.childNodes.forEach((node, index) => copy(node, fragment, index === 0));
     tip.replaceChildren(fragment);
   }
 
@@ -75,8 +79,18 @@
     if (owner === chart) hide();
   }
 
+  // Sentence cells show one scrolling line: start each with its target in view.
+  function centreTargets() {
+    document.querySelectorAll('.semlens-sentence-cell:not([data-centred])').forEach(cell => {
+      cell.dataset.centred = 'true';
+      const mark = cell.querySelector('mark');
+      if (mark) cell.scrollLeft = Math.max(0, mark.offsetLeft - (cell.clientWidth - mark.offsetWidth) / 2);
+    });
+  }
+
   function scan() {
     scanFrame = null;
+    centreTargets();
     for (const [chart, handlers] of bindings) {
       if (!chart.isConnected) unbind(chart, handlers);
     }

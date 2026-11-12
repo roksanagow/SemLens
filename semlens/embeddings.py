@@ -21,6 +21,32 @@ MODEL_ALIASES = {
 }
 
 
+# XL-LEXEME was trained with the target wrapped in these two added tokens.
+TARGET_MARKERS = ("<t>", "</t>")
+
+
+def supports_target_markers(loaded_model) -> bool:
+    """True when the tokenizer has both marker tokens in its vocabulary."""
+    tok = loaded_model.tokenizer
+    ids = tok.convert_tokens_to_ids(list(TARGET_MARKERS))
+    return all(i is not None and i != getattr(tok, "unk_token_id", None) for i in ids)
+
+
+def mark_target(sentence: str, span: tuple[int, int]) -> tuple[str, tuple[int, int]]:
+    """Wrap the target in the marker tokens; return the new text and the target's new span.
+
+    The markers sit directly against the target. The tokenizer splits the text
+    at added tokens and tokenizes each part on its own, which is the input
+    format XL-LEXEME saw in training (left context, <t>, target, </t>, right context).
+    """
+    start, end = span
+    if not 0 <= start < end <= len(sentence):
+        raise ValueError(f"Invalid target span {span}.")
+    opening, closing = TARGET_MARKERS
+    marked = sentence[:start] + opening + sentence[start:end] + closing + sentence[end:]
+    return marked, (start + len(opening), end + len(opening))
+
+
 def resolve_model_name(name: str) -> str:
     return MODEL_ALIASES.get(name, name)
 
@@ -63,10 +89,12 @@ def load_model(model_name: str, device=None, *, revision: str | None = None, loc
     return LoadedModel(tok, mdl, device, resolved)
 
 
-def model_metadata(loaded: LoadedModel, *, layer=-1, representation="word", pooling="mean", max_length=256):
+def model_metadata(loaded: LoadedModel, *, layer=-1, representation="word", pooling="mean", max_length=256,
+                   target_markers=False):
     config = loaded.model.config
     return {"model_id": loaded.name, "revision": getattr(config, "_commit_hash", None),
             "layer": int(layer), "representation": representation, "pooling": pooling,
+            "target_markers": bool(target_markers),
             "max_length": int(max_length), "window_strategy": "overlap_first_occurrence_v1",
             "tokenizer": type(loaded.tokenizer).__name__,
             "dimension": int(getattr(config, "hidden_size", getattr(config, "d_model", 0))),
@@ -74,14 +102,17 @@ def model_metadata(loaded: LoadedModel, *, layer=-1, representation="word", pool
 
 
 def _hidden_states(model, inputs, layer):
+    """-1 is the final output; -2, -3, … count back from it; 0 and up count from the input embeddings."""
     if layer == -1:
         return model(**inputs).last_hidden_state
-    if layer < 0:
-        raise ValueError("Layer must be -1 (final output), 0 (input embeddings), or a positive layer index.")
-    outputs = model(**inputs, output_hidden_states=True)
-    if outputs.hidden_states is None or layer >= len(outputs.hidden_states):
-        raise ValueError(f"Layer {layer} is unavailable for this model.")
-    return outputs.hidden_states[layer]
+    states = model(**inputs, output_hidden_states=True).hidden_states
+    if states is None:
+        raise ValueError("This model does not expose its intermediate layers. Use -1 for the final output.")
+    if not -len(states) <= layer < len(states):
+        top = len(states) - 1
+        raise ValueError(f"Layer {layer} is unavailable. This model has layers 0 (input embeddings) to {top}; "
+                         f"negative values count back from the final output, from -1 to -{len(states)}.")
+    return states[layer]
 
 
 @torch.no_grad()
@@ -152,23 +183,45 @@ def pool_span(vectors: Tensor, offsets: np.ndarray, span: tuple[int,int], senten
     return vectors[selected.tolist()].mean(0)
 
 
+def resolve_target_markers(loaded_model: LoadedModel, representation: str, target_markers: bool | None = None) -> bool:
+    """Markers apply to word representations of models that have them, unless switched off."""
+    if representation != "word" or target_markers is False:
+        return False
+    available = supports_target_markers(loaded_model)
+    if target_markers and not available:
+        raise ValueError("This model has no <t> and </t> target-marker tokens.")
+    return available
+
+
 def extract_word_embeddings(loaded_model: LoadedModel, sentences: Sequence[str], char_spans: Sequence,
                             *, batch_size=16, pooling="mean", max_length=256, progress_callback=None,
-                            layer=-1, representation="word") -> Tensor:
+                            layer=-1, representation="word", target_markers: bool | None = None) -> Tensor:
+    """One vector per usage.
+
+    ``target_markers=None`` wraps the target in <t>…</t> whenever word
+    representations are extracted from a model that has those tokens
+    (XL-LEXEME); the vector is still the mean of the target's own subword
+    tokens. ``False`` encodes the plain sentence.
+    """
     if len(sentences) != len(char_spans):
         raise ValueError("Each sentence needs a corresponding target span.")
     if representation not in {"word", "sentence"}:
         raise ValueError("Representation must be word or sentence.")
-    # Encode each unique context once, even when it contains several targets.
-    unique = list(dict.fromkeys(sentences))
-    tokens = {}
-    for i, offsets, vectors in iter_token_embeddings(loaded_model, unique, batch_size=batch_size, layer=layer,
+    marked = resolve_target_markers(loaded_model, representation, target_markers)
+    # Encode each distinct input once. Unmarked sentences are shared by every
+    # target they contain; a marked sentence is specific to one target.
+    consumers: dict[str, list[tuple[int, tuple[int, int]]]] = {}
+    for position, (sentence, span) in enumerate(zip(sentences, char_spans)):
+        text, span = mark_target(sentence, tuple(span)) if marked else (sentence, tuple(span))
+        consumers.setdefault(text, []).append((position, span))
+    inputs = list(consumers)
+    out: list[Tensor | None] = [None] * len(sentences)
+    # Pool as each input arrives, so token vectors are not all held in memory.
+    for i, offsets, vectors in iter_token_embeddings(loaded_model, inputs, batch_size=batch_size, layer=layer,
                                                     max_length=max_length, progress_callback=progress_callback):
-        tokens[unique[i]] = (offsets, vectors)
-    out = []
-    for sentence, span in zip(sentences, char_spans):
-        offsets,vectors = tokens[sentence]
-        out.append(vectors.mean(0) if representation == "sentence" else pool_span(vectors,offsets,span,sentence,pooling))
+        text = inputs[i]
+        for position, span in consumers[text]:
+            out[position] = vectors.mean(0) if representation == "sentence" else pool_span(vectors, offsets, span, text, pooling)
     return torch.stack(out)
 
 
@@ -199,11 +252,14 @@ class EmbeddedUsages:
 
 
 def embed_usages(loaded_model: LoadedModel, data: TargetWordData, *, batch_size=16, pooling="mean", max_length=256,
-                 progress_callback=None, layer=-1, representation="word") -> EmbeddedUsages:
+                 progress_callback=None, layer=-1, representation="word", target_markers: bool | None = None) -> EmbeddedUsages:
+    marked=resolve_target_markers(loaded_model,representation,target_markers)
     embs=extract_word_embeddings(loaded_model,data.sentences,data.char_spans,batch_size=batch_size,pooling=pooling,
-                                 max_length=max_length,progress_callback=progress_callback,layer=layer,representation=representation)
+                                 max_length=max_length,progress_callback=progress_callback,layer=layer,representation=representation,
+                                 target_markers=marked)
     return EmbeddedUsages(data.word,data.usages,embs,data.corpus_labels,
-                          metadata=model_metadata(loaded_model,layer=layer,representation=representation,pooling=pooling,max_length=max_length))
+                          metadata=model_metadata(loaded_model,layer=layer,representation=representation,pooling=pooling,
+                                                  max_length=max_length,target_markers=marked))
 
 
 def embedded_usages_from_precomputed(data: TargetWordData, embeddings: Tensor, *, metadata=None) -> EmbeddedUsages:

@@ -12,7 +12,8 @@ _DEFAULTS = {
     'palette_name':'Tab10 (matplotlib)', 'distance_metric':'cosine',
     'sampling_mode':'balanced', 'sampling_repetitions':20, 'sampling_seed':42,
     'data_revision':0, 'chronological':False, 'saved_cache_path':None,
-    'theme_mode':'Dark',
+    'theme_mode':'Dark', 'hidden_corpora':[], 'source_split':'auto',
+    'point_size':9, 'point_opacity':0.8, 'figure_format':'png',
 }
 
 

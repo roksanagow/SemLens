@@ -34,7 +34,8 @@ pip install -e ".[all]"
 # Suppress Streamlit email prompt
 if [ ! -f "$HOME/.streamlit/credentials.toml" ]; then
     mkdir -p "$HOME/.streamlit"
-    cp .streamlit/credentials.toml "$HOME/.streamlit/credentials.toml"
+    # Written here rather than copied: .streamlit/credentials.toml is not in the repository.
+    printf '[general]\nemail = ""\n' > "$HOME/.streamlit/credentials.toml"
     echo "Configured Streamlit (suppressed email prompt)"
 fi
 

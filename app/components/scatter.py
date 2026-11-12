@@ -13,6 +13,7 @@ from app.presentation import plot_chart
 from semlens.utils import (
     format_hover_text,
     get_palette,
+    palette_for,
     wrap_hover_html,
 )
 
@@ -106,10 +107,13 @@ def _extract_box_bounds(selection: object) -> tuple[float, float, float, float] 
 def _build_figure_multi_trace(
     coords_2d, corpus_per_point, hover_texts, unique_corpora, corpus_colour_map,
     annotations, sense_classes, definition_anchor_coords, definition_anchor_labels,
-    show_definition_anchors, highlight_indices,
+    show_definition_anchors, highlight_indices, hidden=frozenset(), highlight_label="Highlighted",
 ):
     """Build figure with one trace per corpus (for display-only charts)."""
     fig = go.Figure()
+    shown = [i for i, c in enumerate(corpus_per_point) if c not in hidden]
+    if highlight_indices is not None:
+        highlight_indices = [i for i in highlight_indices if corpus_per_point[i] not in hidden]
 
     for corpus_name in unique_corpora:
         mask = [i for i, c in enumerate(corpus_per_point) if c == corpus_name]
@@ -132,6 +136,8 @@ def _build_figure_multi_trace(
             name=corpus_name,
             text=[hover_texts[i] for i in mask],
             hoverinfo="text",
+            meta=dict(semlens_corpus=corpus_name),
+            visible="legendonly" if corpus_name in hidden else True,
             marker=dict(
                 size=9, color=colour, opacity=0.8,
                 line=dict(width=marker_line_widths, color=marker_line_colours),
@@ -143,7 +149,7 @@ def _build_figure_multi_trace(
         sense_palette = get_palette("Tol Bright (colourblind)")
         sense_colour_map = {s: sense_palette[i % len(sense_palette)] for i, s in enumerate(sense_classes)}
         for sense_name in sense_classes:
-            sense_idx = [i for i, s in annotations.items() if s == sense_name]
+            sense_idx = [i for i in shown if annotations.get(i) == sense_name]
             if not sense_idx:
                 continue
             fig.add_trace(go.Scatter(
@@ -166,13 +172,15 @@ def _build_figure_multi_trace(
             x=definition_anchor_coords[:, 0].tolist(),
             y=definition_anchor_coords[:, 1].tolist(),
             mode="markers+text",
-            name="Definitions",
-            text=definition_anchor_labels,
-            hovertext=[wrap_hover_html(label) for label in definition_anchor_labels],
+            name="Definitions (D1, D2, …)",
+            # Short labels on the plot, in the theme's text colour; the full
+            # definition is in the hover and follows the definition order.
+            text=[f"D{i + 1}" for i in range(len(definition_anchor_labels))],
+            hovertext=[wrap_hover_html(f"Definition {i + 1}: {label}") for i, label in enumerate(definition_anchor_labels)],
             textposition="top center",
-            textfont=dict(size=9, color="#555555"),
+            textfont=dict(size=14),
             hoverinfo="text",
-            marker=dict(size=12, color="#999999", symbol="star", line=dict(width=1, color="#333333")),
+            marker=dict(size=15, color="#f59e0b", symbol="star", line=dict(width=1, color="#78350f")),
         ))
 
     # Highlight
@@ -181,7 +189,7 @@ def _build_figure_multi_trace(
             x=coords_2d[highlight_indices, 0].tolist(),
             y=coords_2d[highlight_indices, 1].tolist(),
             mode="markers",
-            name="Highlighted",
+            name=highlight_label,
             text=[hover_texts[i] for i in highlight_indices],
             hoverinfo="text",
             marker=dict(size=15, color="rgba(0,0,0,0)", line=dict(width=3, color="#FF0000"), symbol="circle"),
@@ -191,31 +199,37 @@ def _build_figure_multi_trace(
     return fig
 
 
-def _build_figure_single_trace(
-    coords_2d, corpus_per_point, hover_texts, unique_corpora, corpus_colour_map,
-    annotations, sense_classes, interaction_mode,
-):
-    """Build figure with ONE trace containing all points (for annotation charts).
+BLIND_COLOUR = "#94a3b8"
 
-    Using a single trace avoids Plotly/Streamlit issues with lasso selection
-    across multiple traces.  Corpus membership is shown via per-point colours.
+
+def _build_figure_annotation(
+    coords_2d, corpus_per_point, hover_texts, unique_corpora, corpus_colour_map,
+    annotations, sense_classes, interaction_mode, hidden=frozenset(),
+    highlight_indices=None, highlight_label="Highlighted", highlight_colour="#ffffff", omit=frozenset(),
+):
+    """Build the selectable figure, with one trace per corpus.
+
+    Every selectable point carries its position in the data as ``customdata``,
+    so a selection maps back to the same usage whichever trace it came from.
+    A corpus switched off in the legend keeps its legend entry; its points,
+    click targets and sense markers are left out until it is switched back on.
     """
     fig = go.Figure()
-
-    n = len(corpus_per_point)
-    all_indices = list(range(n))
+    # ``omit`` holds usages left out of the picture altogether (those already
+    # annotated, when the annotator asks to see only what remains).
+    shown = [i for i, c in enumerate(corpus_per_point) if c not in hidden and i not in omit]
 
     # In click mode, add a larger transparent hit area so users can select
     # points without needing pixel-perfect clicks on tiny markers.
-    if interaction_mode == "click":
+    if interaction_mode == "click" and shown:
         fig.add_trace(go.Scatter(
-            x=coords_2d[:, 0].tolist(),
-            y=coords_2d[:, 1].tolist(),
+            x=coords_2d[shown, 0].tolist(),
+            y=coords_2d[shown, 1].tolist(),
             mode="markers",
             name="_hit_area",
-            text=hover_texts,
+            text=[hover_texts[i] for i in shown],
             hoverinfo="text",
-            customdata=all_indices,
+            customdata=shown,
             marker=dict(
                 size=22,
                 color="rgba(0,0,0,0.001)",
@@ -225,45 +239,26 @@ def _build_figure_single_trace(
             showlegend=False,
         ))
 
-    # Per-point colours based on corpus
-    colours = [corpus_colour_map[c] for c in corpus_per_point]
-
-    # Annotation outlines
-    marker_line_widths = [0.0] * n
-    marker_line_colours = ["rgba(0,0,0,0)"] * n
-    if annotations:
-        for idx in annotations:
-            if 0 <= idx < n:
-                marker_line_widths[idx] = 2.5
-                marker_line_colours[idx] = "#333333"
-
-    # Main trace — all points, customdata = original index
-    fig.add_trace(go.Scatter(
-        x=coords_2d[:, 0].tolist(),
-        y=coords_2d[:, 1].tolist(),
-        mode="markers",
-        name="usages",
-        text=hover_texts,
-        hoverinfo="text",
-        customdata=all_indices,
-        marker=dict(
-            size=9,
-            color=colours,
-            opacity=0.8,
-            line=dict(width=marker_line_widths, color=marker_line_colours),
-        ),
-        showlegend=False,
-    ))
-
-    # Invisible legend traces for corpus colours
     for corpus_name in unique_corpora:
-        colour = corpus_colour_map[corpus_name]
+        mask = [i for i, c in enumerate(corpus_per_point) if c == corpus_name and i not in omit]
+        annotated = [bool(annotations) and i in annotations for i in mask]
         fig.add_trace(go.Scatter(
-            x=[None], y=[None],
+            x=coords_2d[mask, 0].tolist(),
+            y=coords_2d[mask, 1].tolist(),
             mode="markers",
             name=corpus_name,
-            marker=dict(size=9, color=colour),
-            showlegend=True,
+            text=[hover_texts[i] for i in mask],
+            hoverinfo="text",
+            customdata=mask,
+            meta=dict(semlens_corpus=corpus_name),
+            visible="legendonly" if corpus_name in hidden else True,
+            marker=dict(
+                size=9,
+                color=corpus_colour_map[corpus_name],
+                opacity=0.8,
+                line=dict(width=[2.5 if a else 0.0 for a in annotated],
+                          color=["#333333" if a else "rgba(0,0,0,0)" for a in annotated]),
+            ),
         ))
 
     # Annotation overlay — sense diamonds
@@ -271,7 +266,7 @@ def _build_figure_single_trace(
         sense_palette = get_palette("Tol Bright (colourblind)")
         sense_colour_map = {s: sense_palette[i % len(sense_palette)] for i, s in enumerate(sense_classes)}
         for sense_name in sense_classes:
-            sense_idx = [i for i, s in annotations.items() if s == sense_name]
+            sense_idx = [i for i in shown if annotations.get(i) == sense_name]
             if not sense_idx:
                 continue
             fig.add_trace(go.Scatter(
@@ -287,6 +282,23 @@ def _build_figure_single_trace(
                     line=dict(width=2.5, color=sense_colour_map[sense_name]),
                     symbol="diamond",
                 ),
+            ))
+
+    # Search matches: a ring around each matching usage that is on show. The
+    # ring carries the usage's position too, so clicking it selects that usage.
+    if highlight_indices:
+        ringed = [i for i in highlight_indices if corpus_per_point[i] not in hidden and i not in omit]
+        if ringed:
+            fig.add_trace(go.Scatter(
+                x=coords_2d[ringed, 0].tolist(),
+                y=coords_2d[ringed, 1].tolist(),
+                mode="markers",
+                name=highlight_label,
+                text=[hover_texts[i] for i in ringed],
+                hoverinfo="text",
+                customdata=ringed,
+                marker=dict(size=19, color="rgba(0,0,0,0)", symbol="circle",
+                            line=dict(width=2, color=highlight_colour)),
             ))
 
     return fig
@@ -308,59 +320,96 @@ def render_scatter(
     definition_anchor_labels: list[str] | None = None,
     show_definition_anchors: bool = False,
     highlight_indices: list[int] | None = None,
+    highlight_label: str = "Highlighted",
     enable_selection: bool = False,
     interaction_mode: str = "lasso",
     key: str = "scatter",
     char_spans: list[tuple[int, int]] | None = None,
     corpus_order: list[str] | None = None,
+    hidden_corpora: list[str] | tuple[str, ...] = (),
+    blind: bool = False,
+    omit_indices: list[int] | tuple[int, ...] = (),
 ) -> dict:
     """Render an interactive Plotly scatter plot in Streamlit.
 
     Parameters
     ----------
     enable_selection : bool
-        If True, uses a single-trace figure with lasso/box selection enabled.
-        Only set for the annotation chart.
+        If True, the figure accepts click or lasso selection. Only set for the
+        annotation chart.
+    hidden_corpora : list of str
+        Corpora switched off in the legend. They keep their legend entry, so
+        they can be switched back on, but their points are not drawn.
+    blind : bool
+        Draw every corpus in the same neutral colour and leave the corpus out
+        of the hover text, so usages can be annotated without knowing their
+        corpus. Legend entries keep their names and still switch corpora off.
 
     Returns
     -------
     dict
         ``{"clicked_points": list[int]}`` — selected point indices.
     """
-    palette = list(get_palette(palette_name))
-    palette += [c for c in get_palette("Tab10 (matplotlib)") if c not in palette]
     unique_corpora = list(dict.fromkeys(corpus_order or corpus_per_point))
-    corpus_colour_map = {c: palette[i % len(palette)] for i, c in enumerate(unique_corpora)}
+    palette = palette_for(palette_name, len(unique_corpora))
+    corpus_colour_map = {c: BLIND_COLOUR if blind else palette[i] for i, c in enumerate(unique_corpora)}
+    hidden = frozenset(hidden_corpora) & set(unique_corpora)
 
     hover_texts = []
     for i, (sent, corp) in enumerate(zip(sentences, corpus_per_point)):
         nearest_def = definition_labels_per_point[i] if definition_labels_per_point else None
-        hover_texts.append(format_hover_text(sent,target_word,corp,nearest_definition=nearest_def,
+        hover_texts.append(format_hover_text(sent,target_word,None if blind else corp,nearest_definition=nearest_def,
                                             char_span=char_spans[i] if char_spans is not None else None))
 
     if enable_selection:
-        fig = _build_figure_single_trace(
+        fig = _build_figure_annotation(
             coords_2d, corpus_per_point, hover_texts, unique_corpora, corpus_colour_map,
-            annotations, sense_classes, interaction_mode,
+            annotations, sense_classes, interaction_mode, hidden,
+            highlight_indices, highlight_label,
+            # Unlike any corpus or sense colour, and visible on either theme.
+            "#ffffff" if st.session_state.get('theme_mode', 'Dark') == 'Dark' else "#111827",
+            frozenset(omit_indices),
         )
     else:
         fig = _build_figure_multi_trace(
             coords_2d, corpus_per_point, hover_texts, unique_corpora, corpus_colour_map,
             annotations, sense_classes, definition_anchor_coords, definition_anchor_labels,
-            show_definition_anchors, highlight_indices,
+            show_definition_anchors, highlight_indices, hidden, highlight_label,
         )
 
+    # The title sits at the very top and the legend below it, from the left, with
+    # room for as many legend rows as there are entries, so neither covers the other.
+    entries = sum(1 for trace in fig.data if trace.showlegend is not False)
+    legend_rows = -(-entries // 4)
+    top = 52 + 24 * legend_rows
     fig.update_layout(
-        title=dict(text=title, font=dict(size=16)),
+        title=dict(text=title, font=dict(size=16), x=0, xref="paper", xanchor="left",
+                   y=1, yref="container", yanchor="top", pad=dict(t=12)),
         xaxis_title=axis_labels[0],
         yaxis_title=axis_labels[1],
         hovermode="closest",
         hoverlabel=dict(align='left'),
         meta=dict(semlens_usage_hover=True),
-        height=600,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        margin=dict(l=60, r=30, t=80, b=60),
+        height=560 + top,
+        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
+        # A vertical toolbar in the right margin: a horizontal one sits on top of
+        # the legend's first row, where corpus names need to stay clickable.
+        modebar=dict(orientation="v"),
+        margin=dict(l=60, r=50, t=top, b=60),
     )
+
+    # Point size and opacity come from the display settings; rings and
+    # diamonds drawn around points grow with them.
+    size = float(st.session_state.get('point_size', 9))
+    opacity = float(st.session_state.get('point_opacity', 0.8))
+    for trace in fig.data:
+        if (trace.meta or {}).get('semlens_corpus') is not None:
+            trace.marker.size = size
+            trace.marker.opacity = opacity
+        elif trace.name == '_hit_area':
+            trace.marker.size = size + 13
+        elif trace.marker is not None and trace.marker.size is not None and not str(trace.name).startswith('Definitions'):
+            trace.marker.size = trace.marker.size + (size - 9)
 
     if enable_selection:
         if interaction_mode == "click":
@@ -448,7 +497,11 @@ def render_scatter(
     except TypeError:
         pass
 
-    return {"clicked_points": sorted({i for i in clicked_points if 0 <= i < len(sentences)}),
+    # A corpus switched off in the legend cannot be selected, including by the
+    # geometric fallbacks above.
+    return {"clicked_points": sorted({i for i in clicked_points
+                                      if 0 <= i < len(sentences) and corpus_per_point[i] not in hidden
+                                      and i not in set(omit_indices)}),
             "selection_event":(key,st.session_state.get(event_key,0))}
 
 
