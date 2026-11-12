@@ -88,3 +88,4 @@
 - [ ] More linguistic sentence segmentation and automatic morphological expansion; current form matching is explicit and raw-text splitting is heuristic.
 - [ ] Broader model/language validation and guidance on useful intermediate layers.
 - [ ] More efficient very-large-corpus matching; current SAMD still needs the full pairwise distance matrix.
+- [x] One-line launcher: `semlens` command (`uvx --from git+… semlens`); app packaged with its example data; installed copies save to `~/.semlens` or `SEMLENS_HOME`.

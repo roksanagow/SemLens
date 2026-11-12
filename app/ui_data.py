@@ -24,7 +24,8 @@ from app.common import ROOT,STORAGE,get_model,show_usage,ordered_labels
 from app.presentation import readable_table,concordance_html
 
 
-EXAMPLE_PATH=ROOT/'testing_texts'/'bubble_usages.csv'
+# Shipped inside the package so that an installed copy has it too; a test keeps it equal to testing_texts/.
+EXAMPLE_PATH=Path(__file__).resolve().parent/'data'/'bubble_usages.csv'
 EXAMPLE_SOURCE='Example: “bubble” in the Guardian, 1999–2026'
 EXAMPLE_DESCRIPTION=('350 sentences containing *bubble* or *bubbles*, sampled from Guardian and Observer articles: 50 from each of seven periods '
                      'between 1999 and 2026, one per article. The sample was not chosen for particular senses, so it mixes soap bubbles, '

@@ -1,21 +1,65 @@
 # SemLens
 
+> Problems or questions? Email Roksana Goworek at [r.goworek@qmul.ac.uk](mailto:r.goworek@qmul.ac.uk) or [open an issue](https://github.com/roksanagow/SemLens/issues).
+
 Interactive exploration of word meaning across **one to ten corpora**, using contextual embeddings, definitions, usage comparisons and human sense annotation.
 
 All loaded corpora appear together in a shared plot, coloured by corpus. With one corpus, you can explore and annotate usages. With several corpora, the plot continues to show all of them while separate selectors choose the two corpora for a score comparison.
 
 ## Install and launch
 
-Python 3.10 or newer:
+### One line, no download of the repository
+
+With [uv](https://docs.astral.sh/uv/getting-started/installation/) installed:
 
 ```bash
-python -m venv .venv
+uvx --python 3.12 --from git+https://github.com/roksanagow/SemLens semlens
+```
+
+This fetches SemLens and its requirements into a private environment and opens the app in your browser. The first run takes several minutes, mostly for PyTorch; later runs start at once. Everything runs on your computer: the language model is downloaded to it on first use, and saved corpora, embeddings and analyses go to a `.semlens` folder in your home folder.
+
+<details>
+<summary>Options for the one-line launcher</summary>
+
+- Anything after `semlens` is passed to Streamlit, for example `semlens --server.port 8502`.
+- To keep saved files somewhere else, set `SEMLENS_HOME` to a folder before launching: `SEMLENS_HOME=~/Documents/SemLens uvx … semlens`.
+- To pick up a newer version later, add `--refresh` after `uvx`.
+- The command prints the folder it saves to when it starts.
+
+</details>
+
+### From a copy of the repository
+
+Python 3.10 or newer. Run these from the top folder of the repository (the one that contains `pyproject.toml`):
+
+```bash
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[all]"
 streamlit run app/app.py
 ```
 
-On Windows, activate with `.venv\Scripts\activate`.
+On Windows, use `python -m venv .venv` and activate with `.venv\Scripts\activate`. Run this way, saved files go to `.semlens` inside the repository folder.
+
+<details>
+<summary>Or let the setup script do it (macOS and Linux)</summary>
+
+```bash
+bash setup.sh --run
+```
+
+This creates `.venv`, installs everything and launches the app. Without `--run` it installs only. It also answers Streamlit's first-run request for an email address with a blank one, so the app starts without that prompt; with the manual steps above, press Enter when Streamlit asks.
+
+</details>
+
+<details>
+<summary>If a command is not found, or the app does not start</summary>
+
+- **`python: command not found`**: macOS and many Linux systems only have `python3`, which is why the steps above use it. Once the environment is activated, `python` works too.
+- **`No such file: app/app.py`, or `pip install -e` fails**: you are not in the top folder of the repository. `cd` into the folder that contains `pyproject.toml` and try again.
+- **`streamlit: command not found`**: the environment is not active in this terminal. Run `source .venv/bin/activate` again.
+
+</details>
 
 The first use of an encoder may download its model files from Hugging Face. The default is `pierluigic/xl-lexeme`. Other Hugging Face encoders or local model directories can be selected under advanced settings.
 
@@ -215,6 +259,8 @@ For the planned newspaper demo, [Guardian collection instructions](docs/guardian
 pip install -e ".[all]"
 python -m pytest -q
 ```
+
+`semlens` (or `python -m app.launch`) starts the app from any folder once the package is installed.
 
 Tests cover explicit offsets, word forms, one/many corpora, scalar distances, balanced sampling, LDA, shared plots, target markers, dictionary parsing, legend visibility, blind annotation, sense frequencies, annotation invalidation, cache reuse and saved-analysis round trips. Optional integration tests use a small locally cached real encoder without network downloads. When present, the user-supplied files in `testing_texts/` exercise corpus extraction and selected-excerpt embedding/cache equivalence.
 

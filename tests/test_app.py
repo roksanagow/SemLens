@@ -1,6 +1,7 @@
 import json
 import html
 import re
+from pathlib import Path
 from types import SimpleNamespace
 import numpy as np
 import pytest
@@ -1160,3 +1161,21 @@ def test_annotation_list_shows_concordance_lines_with_their_senses():
     at.run()
     assert not at.exception
     assert 'Corpus' not in next(frame.value for frame in at.dataframe if 'Target' in frame.value.columns).columns
+
+
+def test_storage_folder_for_checkout_install_and_override(tmp_path):
+    from app.common import storage_folder
+    checkout=tmp_path/'repo'; checkout.mkdir(); (checkout/'pyproject.toml').write_text('')
+    installed=tmp_path/'site-packages'; installed.mkdir()
+    home=tmp_path/'home'
+    assert storage_folder(checkout,{},home)==checkout/'.semlens'
+    assert storage_folder(installed,{},home)==home/'.semlens'
+    assert storage_folder(checkout,{'SEMLENS_HOME':str(tmp_path/'elsewhere')},home)==tmp_path/'elsewhere'
+
+
+def test_packaged_example_matches_the_collection_file():
+    import app.ui_data as ui
+    source=Path(__file__).resolve().parents[1]/'testing_texts'/'bubble_usages.csv'
+    assert ui.EXAMPLE_PATH.is_file()
+    if source.is_file():
+        assert ui.EXAMPLE_PATH.read_bytes()==source.read_bytes()

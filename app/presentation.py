@@ -23,6 +23,7 @@ def apply_theme():
     .stApp [data-baseweb="select"] > div, .stApp [data-testid="stFileUploaderDropzone"],
     [data-baseweb="popover"], [role="listbox"], [role="option"] {{ background:{surface}; color:{text}; }}
     .stApp :is(input,textarea) {{ -webkit-text-fill-color:{text}; caret-color:{text}; }}
+    .stApp [data-baseweb="select"] input {{ background:transparent; }}
     .stApp button[kind="secondary"], .stApp button[kind="secondaryFormSubmit"] {{ background:{surface}; color:{text}; border-color:{border}; }}
     .stApp :is(details,[data-testid="stForm"]) {{ border-color:{border}; }}
     .stApp summary:hover, .stApp details[open] > summary,

@@ -11,8 +11,7 @@ from semlens.metrics import compute_sampled_metrics,SampledComparison
 from semlens.reduction import reduce_to_2d
 from semlens.utils import palette_for
 
-ROOT=Path(__file__).resolve().parents[1]
-STORAGE=ROOT/'.semlens'
+from app.paths import ROOT,STORAGE,storage_folder
 SAMPLING_HELP=('Balanced: use an equal number of usages from each compared corpus, based on the smaller corpus. '
                'Repeated balanced: repeat without replacement within each sample. A usage may take part in several '
                'repetitions but appears once in the plot. The score range shows sampling variability, not a confidence interval.')

@@ -379,8 +379,14 @@ def render_scatter(
 
     # The title sits at the very top and the legend below it, from the left, with
     # room for as many legend rows as there are entries, so neither covers the other.
-    entries = sum(1 for trace in fig.data if trace.showlegend is not False)
-    legend_rows = -(-entries // 4)
+    # Plotly gives every entry of a wrapped horizontal legend the width of the
+    # longest one, so a long name means fewer entries per row.
+    names = [str(trace.name or "") for trace in fig.data if trace.showlegend is not False]
+    widths = [48 + 6.2 * len(name) for name in names]
+    if sum(widths) <= 1100:
+        legend_rows = 1
+    else:
+        legend_rows = -(-len(names) // max(1, int(900 // max(widths))))
     top = 52 + 24 * legend_rows
     fig.update_layout(
         title=dict(text=title, font=dict(size=16), x=0, xref="paper", xanchor="left",

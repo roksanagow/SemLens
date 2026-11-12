@@ -36,3 +36,7 @@ Thumbs.db
 # Local corpora, embeddings, and saved analyses
 .semlens/
 *.semlens
+
+# Presentation screenshots
+docs/talk/screenshots/
+docs/talk/*.pptx

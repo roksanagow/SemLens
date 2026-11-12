@@ -66,7 +66,10 @@
     const available = useAbove ? above : below;
     tip.style.maxHeight = `${Math.max(1, available)}px`;
     const height = tip.getBoundingClientRect().height;
-    tip.style.left = `${Math.max(12, Math.min(x - natural.width / 2, window.innerWidth - natural.width - 12))}px`;
+    // Keep clear of the sidebar, which is drawn above the tooltip.
+    const sidebar = document.querySelector('[data-testid="stSidebar"]')?.getBoundingClientRect();
+    const leftEdge = 12 + (sidebar && sidebar.width > 1 && sidebar.right < window.innerWidth / 2 ? Math.max(0, sidebar.right) : 0);
+    tip.style.left = `${Math.max(leftEdge, Math.min(x - natural.width / 2, window.innerWidth - natural.width - 12))}px`;
     tip.style.top = `${useAbove ? y - gap - height : y + gap}px`;
     tip.dataset.placement = useAbove ? 'above' : 'below';
     tip.style.visibility = 'visible';

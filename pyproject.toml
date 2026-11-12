@@ -21,27 +21,25 @@ dependencies = [
     "scipy>=1.10",
     "numpy>=1.24",
     "pandas>=2.0",
+    "streamlit>=1.56",
+    "plotly>=5.18",
+    "requests",
+    "umap-learn>=0.5",
 ]
+
+[project.scripts]
+semlens = "app.launch:main"
 
 [project.optional-dependencies]
-umap = ["umap-learn>=0.5"]
-app = [
-    "streamlit>=1.56",
-    "plotly>=5.18",
-    "requests",
-    "umap-learn>=0.5",
-]
-dev = [
-    "pytest",
-    "umap-learn>=0.5",
-]
-all = [
-    "streamlit>=1.56",
-    "plotly>=5.18",
-    "requests",
-    "umap-learn>=0.5",
-    "pytest",
-]
+# The app's own requirements are core dependencies, so that the one-line
+# launcher needs no extras. These names are kept so older commands still work.
+umap = []
+app = []
+dev = ["pytest"]
+all = ["pytest"]
 
 [tool.setuptools.packages.find]
-include = ["semlens*"]
+include = ["semlens*", "app*"]
+
+[tool.setuptools.package-data]
+app = ["components/*.js", "data/*.csv"]

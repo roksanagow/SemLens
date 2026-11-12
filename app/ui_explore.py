@@ -207,7 +207,7 @@ def render_plot(data,embeddings,*,key,definition_labels=None,annotation=False,an
     if search:
         # A typed search takes the place of the nearest-definition highlight.
         highlight=find_usages(data.sentences,search)
-        highlight_label=f'Contains “{search}”'
+        highlight_label='Contains “'+(search if len(search)<=28 else search[:27].rstrip(' ,')+'…')+'”'
         per_corpus=', '.join(f'{corpus}: {sum(data.corpus_list[i]==corpus for i in highlight)}' for corpus in order) if not blind else ''
         st.caption(f'{len(highlight):,} of {len(data):,} usages contain “{search}”.'+(f' {per_corpus}.' if per_corpus and highlight else ''))
     # Actual coordinates determine the selection widget identity, preventing old selections
