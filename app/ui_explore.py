@@ -14,6 +14,7 @@ from semlens.spaces import project_to_definition_space
 from semlens.utils import find_usages
 from app.components.scatter import render_scatter,render_lda_weights_chart
 from app.components.corpus_visibility import hidden_corpora
+from app.grouping import current_view,loaded_words,render_grouping_controls,words_active
 from app.presentation import plot_chart,readable_table,sentence_pair_table,nearest_usage_html
 from app.common import (cached_projection,cached_comparison,cached_corpus_scores,ordered_labels,number,show_usage,
                         corpus_colours,METRIC_HELP,METRIC_NAMES,DIRECTIONAL_AMD_FORMULA,PROJECTION_HELP)
@@ -93,23 +94,73 @@ def _projection_settings(method,key,count,dimensions,distance):
         settings['random_state']=int(cols[1].number_input('Seed',min_value=0,value=42,key=f'{key}_tsne_seed',
             help='t-SNE starts from a random layout. The same seed gives the same picture again; another seed shows how much of the picture is chance.'))
         settings['metric']=distance
+    elif method=='Over time':
+        cols=st.columns(2)
+        settings['trend']=cols[0].checkbox('Show a moving average',value=True,key=f'{key}_time_trend',
+            help='A line through the average vertical position of nearby usages in time (each point averages about a tenth of the usages shown), '
+                 'so a drift up or down stands out from the scatter.')
+        settings['jitter']=cols[1].checkbox('Spread out usages with the same time',value=True,key=f'{key}_time_jitter',
+            help='When many usages share a year, they would sit on one vertical line. This moves each a little sideways, '
+                 'by less than half the gap between times, so they can be told apart.')
     if method in {'UMAP','t-SNE'}:
         st.caption(f'Neighbours are found by {distance} distance, the vector distance chosen in the sidebar.')
     return settings
 
 
+def _time_text(usage,label):
+    """How a usage's time reads in hover text: the original date when there is one."""
+    if usage.time is None:
+        return None
+    original=usage.metadata.get(label) if label else None
+    if original:
+        # 2020-05-10T02:14:27Z reads as 2020-05-10: the time of day is noise here.
+        text=str(original)
+        if len(text)>10 and text[4:5]=='-' and text[10:11] in {'T',' '}:
+            text=text[:10]
+        return f'{label}: {text}'
+    value=int(usage.time) if float(usage.time).is_integer() else round(usage.time,2)
+    return f'{label or "Time"}: {value}'
+
+
+def _spread_times(times,seed=0):
+    """Small sideways offsets for usages that share a time, smaller than half the gap between times."""
+    known=np.unique(times[np.isfinite(times)])
+    gap=float(np.min(np.diff(known))) if len(known)>1 else 1.0
+    return np.random.default_rng(seed).uniform(-0.3*gap,0.3*gap,size=len(times))
+
+
+def _moving_average(times,values,shown):
+    """Average position over time: the mean of about a tenth of the usages shown, centred on each one."""
+    keep=[i for i in shown if np.isfinite(times[i]) and np.isfinite(values[i])]
+    if len(keep)<5:
+        return None
+    order=sorted(keep,key=lambda i:times[i])
+    window=max(5,len(order)//10)
+    frame=pd.DataFrame({'t':times[order],'y':values[order]})
+    smooth=frame.rolling(window,center=True,min_periods=max(3,window//2)).mean().dropna()
+    return go.Scatter(x=smooth['t'].tolist(),y=smooth['y'].tolist(),mode='lines',name='Moving average',
+                      line=dict(color='#f59e0b',width=3),hoverinfo='skip')
+
+
 def render_plot(data,embeddings,*,key,definition_labels=None,annotation=False,annotations=None,sense_classes=None,blind=False,
-                omit_indices=()):
+                omit_indices=(),annotation_scale=None,hover_notes=None,blind_groups=None,download_columns=None,noun=('corpus','corpora')):
     """Every point is included; pair selectors never filter this shared plot.
 
     Corpora switched off in the legend stay off across views. ``blind`` hides
     which corpus a usage belongs to, for annotation.
     """
     order=ordered_labels(data)
+    # Blind annotation hides the corpus. When the groups are words, which a
+    # reader sees in the sentence anyway, their colours and LDA stay.
+    hide_groups=blind if blind_groups is None else blind_groups
     options=['PCA','UMAP','t-SNE']
-    # LDA arranges usages by corpus, which would give the corpora away.
-    if len(order)>1 and not blind:
+    # LDA arranges usages by group, which would give hidden groups away.
+    if len(order)>1 and not hide_groups:
         options.append('LDA')
+    # Time would give the corpora away in blind annotation, like LDA.
+    timed=data.has_time and not blind
+    if timed:
+        options.append('Over time')
     if definition_labels:
         if annotation:
             options.append('Definition axes')
@@ -120,7 +171,10 @@ def render_plot(data,embeddings,*,key,definition_labels=None,annotation=False,an
         st.session_state[view_key]='Definition axes'
     if st.session_state.get(view_key) not in options:
         st.session_state.pop(view_key,None)
-    help_text='All corpora share one plot. '+PROJECTION_HELP
+    help_text=f'All {noun[1]} share one plot. '+PROJECTION_HELP
+    if timed:
+        help_text+=('\n\n**Over time** puts each usage\'s time on the horizontal axis and a chosen position (PC1, PC2'
+                    +(' or the distance to a definition' if definition_labels else '')+') on the vertical one.')
     if definition_labels:
         help_text='**Definition axes** puts a chosen definition on each axis (the distance of every usage to that definition), or combines a definition with PC1/PC2.\n\n'+help_text
     method=st.selectbox('Plot view',options,key=view_key,help=help_text)
@@ -129,6 +183,11 @@ def render_plot(data,embeddings,*,key,definition_labels=None,annotation=False,an
     plot_options=st.expander('Plot options')
     with plot_options:
         settings=_projection_settings(method,key,len(x),x.shape[1],distance)
+        colour_by_time=False
+        if timed and method!='Over time':
+            colour_by_time=st.radio('Colour points by',['Corpus','Time'],horizontal=True,key=f'{key}_colour_by',
+                                    help='Time shades every usage along one scale, from earliest (dark) to latest (light). '
+                                         'Clicking a corpus in the legend still hides and shows it.')=='Time'
         search=''
         if not annotation:
             search=st.text_input('Highlight usages containing',key=f'{key}_search',placeholder='For example: AI, dot-com, specul*',help=SEARCH_HELP).strip()
@@ -145,6 +204,7 @@ def render_plot(data,embeddings,*,key,definition_labels=None,annotation=False,an
             else:
                 st.caption('Definition anchors are available in PCA, LDA and chosen-axis views.')
     lda_result=None
+    extra_traces=[]
     try:
         if method=='Definition axes':
             options_axes=[f'Definition {i+1}: {label}' for i,label in enumerate(definition_labels)]+['PC1','PC2']
@@ -163,6 +223,32 @@ def render_plot(data,embeddings,*,key,definition_labels=None,annotation=False,an
             anchor_coords=None if anchors is None else np.column_stack([axis(x_choice,anchors,anchor_pcs)[0],axis(y_choice,anchors,anchor_pcs)[0]])
             axes=(xlabel,ylabel)
             st.caption('Definition axes show cosine distance: smaller values mean closer to that definition. PC axes summarise variation across all definition dimensions.')
+        elif method=='Over time':
+            times=np.array([np.nan if t is None else float(t) for t in data.times])
+            choices=['PC1','PC2']+([f'Definition {i+1}: {label}' for i,label in enumerate(definition_labels)] if definition_labels else [])
+            y_choice=st.selectbox('Vertical axis',choices,key=f'{key}_time_y',
+                                  help='PC1 and PC2 are the directions along which the usages differ most. A definition puts each usage\'s distance to it on this axis.')
+            if y_choice in {'PC1','PC2'}:
+                k=int(y_choice[-1])-1
+                yy=_pca_axes(x)[0][:,k]
+                ylabel=_pca_axis_labels(x,' of definition space' if definition_labels else '')[k]
+            else:
+                k=choices.index(y_choice)-2
+                yy=x[:,k]
+                ylabel=f'Distance to: {definition_labels[k]}'
+            xx=times+(_spread_times(times) if settings.get('jitter') else 0)
+            coords=np.column_stack([xx,yy])
+            axes=(data.time_label or 'Time',ylabel)
+            anchor_coords=None
+            undated=int(np.isnan(times).sum())
+            if undated:
+                st.caption(f'{undated:,} of {len(data):,} usages have no time and are not shown in this view.')
+            if settings.get('trend'):
+                hidden=set(hidden_corpora(order))
+                shown=[i for i,c in enumerate(data.corpus_list) if c not in hidden and i not in set(omit_indices)]
+                trend=_moving_average(times,yy,shown)
+                if trend is not None:
+                    extra_traces.append(trend)
         elif method=='LDA':
             lda_result=_lda(x,data.corpus_list,order,definition_labels)
             coords=lda_result.coords_2d
@@ -208,28 +294,40 @@ def render_plot(data,embeddings,*,key,definition_labels=None,annotation=False,an
         # A typed search takes the place of the nearest-definition highlight.
         highlight=find_usages(data.sentences,search)
         highlight_label='Contains “'+(search if len(search)<=28 else search[:27].rstrip(' ,')+'…')+'”'
-        per_corpus=', '.join(f'{corpus}: {sum(data.corpus_list[i]==corpus for i in highlight)}' for corpus in order) if not blind else ''
+        per_corpus=', '.join(f'{corpus}: {sum(data.corpus_list[i]==corpus for i in highlight)}' for corpus in order) if not hide_groups else ''
         st.caption(f'{len(highlight):,} of {len(data):,} usages contain “{search}”.'+(f' {per_corpus}.' if per_corpus and highlight else ''))
     # Actual coordinates determine the selection widget identity, preventing old selections
     # from being applied after a view/data change while keeping positions stable on annotation.
+    notes=list(hover_notes) if hover_notes else [None]*len(data)
+    if timed and data.time_label!='corpus':
+        for i,u in enumerate(data.usages):
+            text=_time_text(u,data.time_label)
+            if text:
+                notes[i]=text if not notes[i] else f'{notes[i]}\n{text}'
     import hashlib
     signature=hashlib.sha256(coords.tobytes()+str(axes).encode()).hexdigest()[:12]
     result=render_scatter(coords,data.corpus_list,data.sentences,data.word,
-        palette_name=st.session_state.palette_name,title=f'{data.word} · {len(order)} corpora',axis_labels=axes,
+        palette_name=st.session_state.palette_name,title=f'{data.word} · {len(order)} {noun[1] if len(order)!=1 else noun[0]}',axis_labels=axes,
         char_spans=data.char_spans,corpus_order=order,definition_labels_per_point=nearest,
         definition_anchor_coords=anchor_coords,definition_anchor_labels=anchor_labels,
         show_definition_anchors=anchor_coords is not None,highlight_indices=highlight,highlight_label=highlight_label,
         annotations=annotations,sense_classes=sense_classes,enable_selection=annotation,interaction_mode=interaction,
-        hidden_corpora=hidden_corpora(order),blind=blind,omit_indices=omit_indices,
-        key=f'{key}_chart_{st.session_state.data_revision}_{signature}_{interaction}')
+        hidden_corpora=hidden_corpora(order),blind=hide_groups,omit_indices=omit_indices,
+        annotation_scale=annotation_scale,hover_notes=notes if any(notes) else None,
+        colour_values=data.times if colour_by_time else None,colour_title=data.time_label or 'Time',
+        extra_traces=extra_traces,
+        key=f'{key}_chart_{st.session_state.data_revision}_{signature}_{interaction}_{int(colour_by_time)}')
     if not blind:
         with plot_options:
-            table=pd.DataFrame({'usage_id':[u.usage_id for u in data.usages],'corpus':data.corpus_list,
+            table=pd.DataFrame({'usage_id':[u.usage_id for u in data.usages],noun[0]:data.corpus_list,
+                                **(download_columns or {}),
                                 'matched_form':[u.matched_form for u in data.usages],'sentence':data.sentences,
                                 'start':[u.char_start for u in data.usages],'end':[u.char_end for u in data.usages],
                                 'x':coords[:,0],'y':coords[:,1],'x_axis':axes[0],'y_axis':axes[1]})
+            if data.has_time:
+                table.insert(2,'time',data.times)
             if annotations is not None:
-                table['sense']=[annotations.get(i,'') for i in range(len(data))]
+                table['sense']=['; '.join(annotations.get(i,{})) for i in range(len(data))]
             st.download_button('Download plot data (CSV)',data=table.to_csv(index=False),file_name=f'{data.word}_plot_{method.lower().replace(" ","_")}.csv',
                                mime='text/csv',key=f'{key}_plot_download',
                                help='One row per usage with its sentence, corpus and position in this plot, for drawing the figure in other software.')
@@ -240,18 +338,28 @@ def render_plot(data,embeddings,*,key,definition_labels=None,annotation=False,an
     return result
 
 
-def render_comparison(data,embeddings,*,key,definition_labels=None):
+def render_comparison(data,embeddings,*,key,definition_labels=None,noun=('corpus','corpora')):
     labels=ordered_labels(data)
     if len(labels)<2:
-        st.info('One corpus is available. You can explore and annotate its usages; change scores need a second corpus.')
+        st.info(f'One {noun[0]} is shown. You can explore and annotate its usages; change scores need a second {noun[0]}.')
         return
-    st.subheader('Compare corpora')
-    st.caption('The plot includes all corpora. Select the two corpora whose scores and counterparts you want to inspect. '
-               'A higher score means the usages of the two corpora are further apart; what counts as high depends on the model and the word, '
+    # Words and corpora keep their own choices. A browser sends a widget's last
+    # value back, so a choice that is no longer among the groups (filtered out,
+    # say) cannot be cleared: the selectors are given fresh keys instead.
+    base=key if noun[0]=='corpus' else f'{key}_words'
+    generation=st.session_state.get(f'_{base}_generation',0)
+    key=base if not generation else f'{base}_g{generation}'
+    if any(st.session_state.get(f'{key}_{side}') not in (None,*labels) for side in ('from','to','pairs_from','pairs_to')):
+        generation+=1
+        st.session_state[f'_{base}_generation']=generation
+        key=f'{base}_g{generation}'
+    st.subheader(f'Compare {noun[1]}')
+    st.caption(f'The plot includes all {noun[1]}. Select the two {noun[1]} whose scores and counterparts you want to inspect. '
+               f'A higher score means the usages of the two {noun[1]} are further apart; what counts as high depends on the model and the word, '
                'so compare scores with each other and read the sentences behind them.')
     cols=st.columns(2)
-    a=cols[0].selectbox('From corpus',labels,key=f'{key}_from')
-    b=cols[1].selectbox('To corpus',[c for c in labels if c!=a],key=f'{key}_to')
+    a=cols[0].selectbox(f'From {noun[0]}',labels,key=f'{key}_from')
+    b=cols[1].selectbox(f'To {noun[0]}',[c for c in labels if c!=a],key=f'{key}_to')
     ia,ib=data.indices_for_corpus(a),data.indices_for_corpus(b)
     xa,xb=embeddings[ia],embeddings[ib]
     distance='absolute' if definition_labels and len(definition_labels)==1 else st.session_state.distance_metric
@@ -470,11 +578,11 @@ def corpus_score_heatmap(stats,counts,labels,metric):
     return fig
 
 
-def render_corpus_scores(data,embeddings):
+def render_corpus_scores(data,embeddings,noun=('corpus','corpora')):
     labels=ordered_labels(data)
     if len(labels)<2:
         return
-    st.subheader(f'Scores for “{data.word}” across all corpora')
+    st.subheader(f'Scores for “{data.word}” across all {noun[1]}')
     mode=st.session_state.sampling_mode
     distance=st.session_state.distance_metric
     descriptions={'balanced':'equal-size samples for each pair','unequal':'all loaded occurrences',
@@ -494,31 +602,40 @@ def render_corpus_scores(data,embeddings):
                                              st.session_state.sampling_repetitions,st.session_state.sampling_seed)
     pick=np.ix_(shown,shown)
     visible=[labels[i] for i in shown]
-    for metrics in [('apd','prt'),('amd','samd')]:
+    if len(shown)==2:
+        # A heatmap of two groups has one cell: a plain table reads better.
+        i,j=shown
+        readable_table(pd.DataFrame({'Score':[f'{METRIC_NAMES[m]} ({m.upper()})' for m in ('apd','prt','amd','samd')],
+                                     f'{labels[i]} ↔ {labels[j]}':[number(float(matrices[m]['mean'][i,j])) for m in ('apd','prt','amd','samd')]}))
+        st.caption(f'With two {noun[1]}, each score is a single number. Compare {noun[1]} below shows them with their formulas and the sentences behind them.')
+    for metrics in ([('apd','prt'),('amd','samd')] if len(shown)>2 else []):
         cols=st.columns(2)
         for col,metric in zip(cols,metrics):
             with col:
                 stats={stat:matrix[pick] for stat,matrix in matrices[metric].items()}
                 plot_chart(corpus_score_heatmap(stats,counts[pick],visible,metric),width='stretch',key=f'all_pairs_{metric}')
                 st.caption(METRIC_HELP[metric])
-    st.caption('In the formulas, $A$ and $B$ are the usages of the two corpora and $d$ is the distance chosen in the sidebar. '
-               'Each heatmap has its own colour scale. The diagonal is omitted: within-corpus comparisons are not change scores. Sample sizes can differ between corpus pairs.')
+    if len(shown)>2:
+        st.caption(f'In the formulas, $A$ and $B$ are the usages of the two {noun[1]} and $d$ is the distance chosen in the sidebar. '
+                   f'Each heatmap has its own colour scale. The diagonal is omitted: within-{noun[0]} comparisons are not change scores. '
+                   f'Sample sizes can differ between pairs of {noun[1]}.')
     if not np.isfinite(matrices['prt']['mean'][pick][~np.eye(len(shown),dtype=bool)]).all():
         st.caption('PRT cells marked n/a are undefined: a corpus centroid has no direction under cosine distance.')
     rows=[]
     for a in range(len(shown)):
         for b in range(a+1,len(shown)):
             i,j=shown[a],shown[b]
-            row={'corpus_a':labels[i],'corpus_b':labels[j],'usages_a':int(counts[i,j]),'usages_b':int(counts[j,i])}
+            row={f'{noun[0]}_a':labels[i],f'{noun[0]}_b':labels[j],'usages_a':int(counts[i,j]),'usages_b':int(counts[j,i])}
             for metric in ('apd','prt','amd','samd'):
                 row[metric]=float(matrices[metric]['mean'][i,j])
                 if mode=='repeated':
                     row[f'{metric}_min'],row[f'{metric}_max']=float(matrices[metric]['min'][i,j]),float(matrices[metric]['max'][i,j])
             rows.append({**row,'distance':distance,'sampling':mode,'seed':st.session_state.sampling_seed})
-    st.download_button('Download scores for all corpus pairs (CSV)',data=pd.DataFrame(rows).to_csv(index=False),
+    st.download_button(f'Download scores for all {noun[0]} pairs (CSV)',data=pd.DataFrame(rows).to_csv(index=False),
                        file_name=f'{data.word}_scores.csv',mime='text/csv',key='scores_download',
                        help='One row per pair of corpora, with the four scores, the number of usages compared and the settings used.')
-    if st.session_state.chronological and len(shown)>=3:
+    # Only corpora have a time order; words do not.
+    if st.session_state.chronological and noun[0]=='corpus' and len(shown)>=3:
         render_change_over_time(matrices,visible,shown)
 
 
@@ -553,6 +670,146 @@ def render_change_over_time(matrices,labels,positions):
     plot_chart(change_over_time_figure(matrices,labels,positions),width='stretch',key='change_over_time')
 
 
+def words_by_corpus(data,words,word_order,corpus_order):
+    """Usages of each word (rows) in each corpus (columns)."""
+    counts=pd.DataFrame(0,index=list(word_order),columns=list(corpus_order))
+    for word,usage in zip(words,data.usages):
+        if word in counts.index and usage.corpus in counts.columns:
+            counts.loc[word,usage.corpus]+=1
+    return counts
+
+
+def render_words_by_corpus(data,words,word_order):
+    """How often each word occurs in each corpus: counts, shares, per million words, and a stacked chart."""
+    order=ordered_labels(data)
+    counts=words_by_corpus(data,words,word_order,order)
+    totals=counts.sum(axis=0)
+    shares=counts.div(totals.where(totals>0),axis=1)
+    st.subheader('Words by corpus')
+    st.caption('How often each word occurs among the loaded usages of each corpus. Shares are out of the corpus’s loaded usages of all the words, '
+               'so they show how the words divide the corpus between them.')
+    percentages=st.checkbox('Show percentages of each corpus’s usages',value=True,key='words_by_corpus_percentages')
+    table=(shares*100).round(1) if percentages else counts.copy()
+    table.loc['All words']=totals if not percentages else totals.where(totals==0,100.0)
+    display=table.rename_axis('Word').reset_index()
+    if percentages:
+        for corpus in order:
+            display[corpus]=[('—' if pd.isna(v) else f'{v:.1f}%') for v in display[corpus]]
+    else:
+        display['Total']=list(counts.sum(axis=1))+[int(totals.sum())]
+    readable_table(display)
+    stats=st.session_state.get('_corpus_stats') or {}
+    complete=stats and all(c in stats and stats[c].get('words') and stats[c].get('found')==len(data.indices_for_corpus(c)) for c in order)
+    if complete:
+        per_million=counts.astype(float)
+        for corpus in order:
+            per_million[corpus]=counts[corpus]/stats[corpus]['words']*1e6
+        st.markdown('**Per million words**')
+        readable_table(per_million.round(1).rename_axis('Word').reset_index())
+        st.caption('Usages of each word divided by the size of the corpus, so corpora of different sizes can be compared.')
+    elif stats:
+        st.caption('Per million words is not shown, because a maximum number of occurrences per corpus was set: the loaded usages are a sample.')
+    palette=corpus_colours(list(word_order),st.session_state.palette_name)
+    totals_chart=st.checkbox('Show totals instead of shares in the chart',value=False,key='words_by_corpus_totals',
+                             help='Shares: every corpus reaches the same height. Totals: bars count usages, so a corpus with more usages has a taller bar.')
+    fig=go.Figure()
+    for word in word_order:
+        fig.add_trace(go.Bar(x=order,y=(counts.loc[word] if totals_chart else shares.loc[word]).tolist(),name=word,marker_color=palette[word],
+                             customdata=[[int(counts.loc[word,c]),int(totals[c])] for c in order],
+                             hovertemplate='%{x}<br>'+word.replace('%','%%')+': %{customdata[0]} of %{customdata[1]} usages<extra></extra>'))
+    fig.update_layout(barmode='stack',height=360,margin=dict(l=60,r=30,t=30,b=60),
+                      yaxis_title='Usages' if totals_chart else 'Share of the corpus’s usages',
+                      legend=dict(title='Word',orientation='h',yanchor='bottom',y=1.02,xanchor='left',x=0))
+    fig.update_xaxes(type='category',categoryorder='array',categoryarray=order)
+    fig.update_yaxes(tickformat=',d' if totals_chart else '.0%')
+    plot_chart(fig,width='stretch',key='words_by_corpus_chart')
+    st.download_button('Download words by corpus (counts)',data=counts.rename_axis('word').to_csv(),
+                       file_name=f'{data.word}_words_by_corpus.csv',mime='text/csv',key='words_by_corpus_download')
+
+
+def _group_score(array,ia,ib,labels,metric):
+    """One score between two sets of usages, with the sidebar's settings; NaN when either is empty."""
+    if not len(ia) or not len(ib):
+        return float('nan')
+    comparison=cached_comparison(array[ia],array[ib],labels,st.session_state.distance_metric,st.session_state.sampling_mode,
+                                 st.session_state.sampling_repetitions,st.session_state.sampling_seed)
+    return float(comparison.summary.loc[metric,'mean'])
+
+
+def word_change_series(array,data,words,word_order,corpus_order,metric,baseline='previous',reference=None):
+    """Scores for the words over time.
+
+    Returns ``(each_word, between)``: for each word, its score in each later
+    period against the period before (or the first); and, for each other word,
+    its score against ``reference`` within each period.
+    """
+    groups={}
+    for i,(word,usage) in enumerate(zip(words,data.usages)):
+        groups.setdefault((word,usage.corpus),[]).append(i)
+    each={}
+    for word in word_order:
+        values=[]
+        for k in range(1,len(corpus_order)):
+            earlier=corpus_order[k-1] if baseline=='previous' else corpus_order[0]
+            values.append(_group_score(array,groups.get((word,earlier),[]),groups.get((word,corpus_order[k]),[]),
+                                       (f'{word} · {earlier}',f'{word} · {corpus_order[k]}'),metric))
+        each[word]=values
+    between={}
+    if reference is not None:
+        for word in word_order:
+            if word==reference:
+                continue
+            between[word]=[_group_score(array,groups.get((reference,c),[]),groups.get((word,c),[]),
+                                        (f'{reference} · {c}',f'{word} · {c}'),metric) for c in corpus_order]
+    return each,between
+
+
+def render_word_change(data,words,word_order,embeddings):
+    """Each word over the periods, and the distance between words period by period."""
+    order=ordered_labels(data)
+    if not st.session_state.chronological or len(order)<3:
+        return
+    st.subheader('Words over time')
+    st.caption('The same scores as above, computed for each word on its own usages. One score at a time keeps the charts readable; '
+               'a gap means a word has no usages in that period.')
+    st.caption('Scores also depend on how many usages are compared: a word with few usages in each period gets higher scores from that alone. '
+               'Read each word’s line against itself over time; the levels of two words are not directly comparable unless their counts are similar '
+               '(see Words by corpus).')
+    metric=st.radio('Score',['apd','prt','amd','samd'],index=2,horizontal=True,key='word_change_metric',
+                    format_func=lambda m:f'{METRIC_NAMES[m]} ({m.upper()})',help=METRIC_HELP['amd'])
+    cols=st.columns(2)
+    baseline=cols[0].radio('Compare each period with',['previous','first'],horizontal=True,key='word_change_baseline',
+                           format_func={'previous':'the period before','first':f'the first period ({order[0]})'}.get)
+    reference=cols[1].selectbox('Distance between words: from',word_order,key='word_change_reference',
+                                help='Each other word is compared with this one, within each period.')
+    with st.spinner('Comparing the words in each period…'):
+        each,between=word_change_series(embeddings.detach().cpu().numpy(),data,words,word_order,order,metric,baseline,reference)
+    colours=corpus_colours(list(word_order),st.session_state.palette_name)
+    later=order[1:]
+    fig=go.Figure()
+    for word,values in each.items():
+        fig.add_trace(go.Scatter(x=later,y=values,name=word,mode='lines+markers',connectgaps=False,
+                                 line=dict(color=colours[word],width=2.5),marker=dict(size=7,color=colours[word]),
+                                 hovertemplate=word.replace('%','%%')+' · %{x}<br>'+metric.upper()+': %{y:.4g}<extra></extra>'))
+    fig.update_layout(title=f'Each word against {"the period before" if baseline=="previous" else "the first period"}',height=380,
+                      margin=dict(l=60,r=30,t=70,b=70),yaxis_title=metric.upper(),
+                      legend=dict(title='Word',orientation='h',yanchor='bottom',y=1.02,xanchor='left',x=0))
+    fig.update_xaxes(type='category',categoryorder='array',categoryarray=later,tickangle=-30)
+    plot_chart(fig,width='stretch',key='word_change_each')
+    if between:
+        fig=go.Figure()
+        for word,values in between.items():
+            fig.add_trace(go.Scatter(x=order,y=values,name=f'{word}',mode='lines+markers',connectgaps=False,
+                                     line=dict(color=colours[word],width=2.5),marker=dict(size=7,color=colours[word]),
+                                     hovertemplate=f'{reference} ↔ {word}'.replace('%','%%')+' · %{x}<br>'+metric.upper()+': %{y:.4g}<extra></extra>'))
+        fig.update_layout(title=f'Distance between “{reference}” and each other word, period by period',height=380,
+                          margin=dict(l=60,r=30,t=70,b=70),yaxis_title=metric.upper(),
+                          legend=dict(title=f'Compared with {reference}',orientation='h',yanchor='bottom',y=1.02,xanchor='left',x=0))
+        fig.update_xaxes(type='category',categoryorder='array',categoryarray=order,tickangle=-30)
+        plot_chart(fig,width='stretch',key='word_change_between')
+        st.caption('A falling line means the two words are used more alike in later periods; a rising line, that they drift apart.')
+
+
 def render_full_space():
     st.header('Explore all corpora')
     eu=st.session_state.embedded_usages
@@ -560,9 +817,20 @@ def render_full_space():
         st.info('Load data and embed usages in Data & Model first.')
         return
     data=st.session_state.target_word_data
+    render_grouping_controls(data,'explore')
+    view=current_view(data)
+    noun=view.noun
     st.caption('Each point is one usage of the word. Points lie close together when the language model represents those usages similarly, '
-               'which usually means similar meaning or context. Hover a point to read its sentence; click a corpus in the legend to hide it.')
-    st.caption(f"Representation: {eu.metadata.get('representation','unspecified')} · {eu.dim} dimensions · all {len(data.corpus_labels)} corpora")
-    render_plot(data,eu.embeddings,key='full')
-    render_corpus_scores(data,eu.embeddings)
-    render_comparison(data,eu.embeddings,key='full')
+               f'which usually means similar meaning or context. Hover a point to read its sentence; click a {noun[0]} in the legend to hide it.')
+    st.caption(f"Representation: {eu.metadata.get('representation','unspecified')} · {eu.dim} dimensions · "
+               f"{len(view.data):,} usages in {len(view.data.corpus_labels)} {noun[1] if len(view.data.corpus_labels)!=1 else noun[0]}")
+    vectors=view.embeddings(eu.embeddings)
+    render_plot(view.data,vectors,key='full',hover_notes=view.hover_notes(),download_columns=view.download_columns(),noun=noun)
+    active=words_active(data)
+    if active:
+        words,word_order=loaded_words(data)
+        render_words_by_corpus(data,words,word_order)
+    render_corpus_scores(view.data,vectors,noun)
+    if active:
+        render_word_change(data,words,word_order,eu.embeddings)
+    render_comparison(view.data,vectors,key='full',noun=noun)

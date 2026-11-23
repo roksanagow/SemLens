@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import io
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -63,8 +65,15 @@ class UsageInstance:
     # Extra columns from a usage table (date, title, URL, …). Carried into saved
     # analyses and the annotation export; not part of the usage's identity.
     metadata: dict = field(default_factory=dict)
+    # A point in time (a year, possibly with a fraction, or any other number),
+    # for continuous-time views. Like metadata, not part of the usage's identity.
+    time: float | None = None
 
     def __post_init__(self):
+        if self.time is not None:
+            self.time = float(self.time)
+            if not math.isfinite(self.time):
+                raise ValueError("A usage's time must be a finite number.")
         if not isinstance(self.sentence, str) or not self.sentence.strip():
             raise ValueError("Each usage must have a non-empty sentence.")
         if not isinstance(self.corpus, str) or not self.corpus.strip():
@@ -94,6 +103,8 @@ class TargetWordData:
     usages: list[UsageInstance] = field(default_factory=list)
     corpus_order: list[str] = field(default_factory=list)
     forms: list[str] = field(default_factory=list)
+    # Name of the time column (such as "date" or "year"), when usages have times.
+    time_label: str = ""
 
     def __post_init__(self):
         self.forms = normalise_forms(self.word, self.forms)
@@ -124,8 +135,16 @@ class TargetWordData:
     def indices_for_corpus(self, corpus: str) -> list[int]:
         return [i for i, u in enumerate(self.usages) if u.corpus == corpus]
 
+    @property
+    def times(self) -> list[float | None]:
+        return [u.time for u in self.usages]
+
+    @property
+    def has_time(self) -> bool:
+        return any(u.time is not None for u in self.usages)
+
     def subset(self, indices: Sequence[int]) -> TargetWordData:
-        return TargetWordData(self.word, [self.usages[i] for i in indices], self.corpus_order, self.forms)
+        return TargetWordData(self.word, [self.usages[i] for i in indices], self.corpus_order, self.forms, self.time_label)
 
     def __len__(self):
         return len(self.usages)
@@ -267,9 +286,19 @@ def load_from_sentences_with_positions(sentences: Sequence[str], word: str, star
 
 
 def load_from_csv(path: str | Path | TextIO, word: str, *, sentence_col: str = "sentence",
-                  corpus_col: str = "corpus", start_col: str | None = "start", end_col: str | None = "end",
+                  corpus_col: str | None = "corpus", start_col: str | None = "start", end_col: str | None = "end",
                   delimiter: str | None = None, forms: Sequence[str] | None = None,
-                  all_occurrences: bool = True, match_case: bool = False) -> TargetWordData:
+                  all_occurrences: bool = True, match_case: bool = False,
+                  time_col: str | None = None, periods: int | None = None,
+                  period_method: str = "width") -> TargetWordData:
+    """Usages from a table with one sentence per row.
+
+    ``time_col`` names a column of years, numbers or ISO dates, kept as each
+    usage's time. Corpora come from ``corpus_col``; with ``periods`` set (or no
+    corpus column), they are instead periods formed from the times.
+    """
+    from .timeline import assign_periods, parse_time
+
     if delimiter is None:
         name = str(path) if isinstance(path, (str, Path)) else getattr(path, "name", "")
         delimiter = "\t" if Path(name).suffix.lower() in (".tsv", ".tab") else ","
@@ -280,12 +309,20 @@ def load_from_csv(path: str | Path | TextIO, word: str, *, sentence_col: str = "
         rows = list(csv.DictReader(path, delimiter=delimiter))
     if not rows:
         raise ValueError("No data rows found.")
-    if sentence_col not in rows[0] or corpus_col not in rows[0]:
-        raise ValueError(f"Required columns: {sentence_col}, {corpus_col}.")
-    usages = []
-    reserved = {sentence_col, corpus_col, start_col, end_col, "sentence_id", "matched_form", None, ""}
+    columns = rows[0].keys()
+    if time_col and time_col not in columns:
+        raise ValueError(f"No column named {time_col!r}.")
+    use_periods = bool(time_col) and (periods is not None or not corpus_col or corpus_col not in columns)
+    if sentence_col not in columns:
+        raise ValueError(f"Required column: {sentence_col}.")
+    if not use_periods and (not corpus_col or corpus_col not in columns):
+        raise ValueError(f"Required columns: {sentence_col}, {corpus_col or 'corpus'} (or choose a time column to form periods).")
+    reserved = {sentence_col, start_col, end_col, "sentence_id", "matched_form", None, ""}
+    if not use_periods:
+        reserved.add(corpus_col)
+    pending = []
     for i, row in enumerate(rows):
-        sent, corpus = row[sentence_col], row[corpus_col]
+        sent = row[sentence_col]
         extra = {key: value for key, value in row.items() if key not in reserved and value not in (None, "")}
         start, end = row.get(start_col, "") if start_col else "", row.get(end_col, "") if end_col else ""
         has_start, has_end = start not in ("", None), end not in ("", None)
@@ -302,10 +339,46 @@ def load_from_csv(path: str | Path | TextIO, word: str, *, sentence_col: str = "
                 raise ValueError(f"Row {i + 1}: target missing; provide offsets or another form.")
             if not all_occurrences and len(spans) != 1:
                 raise ValueError(f"Row {i + 1}: multiple occurrences; supply start/end for pre-computed embeddings.")
+        time = None
+        if time_col:
+            try:
+                time = parse_time(row.get(time_col))
+            except ValueError:
+                time = None
         sid = row.get("sentence_id") or str(i)
+        pending.append((sent, None if use_periods else row[corpus_col], spans, sid, extra, time))
+    order: list[str] = []
+    if use_periods:
+        labels, order = assign_periods([item[5] for item in pending], periods or 5, period_method)
+        pending = [(sent, label, spans, sid, extra, time) for (sent, _, spans, sid, extra, time), label in zip(pending, labels)]
+    usages = []
+    for sent, corpus, spans, sid, extra, time in pending:
         for start, end in spans:
-            usages.append(UsageInstance(sent, word, start, end, corpus, sid, dict(extra)))
-    return TargetWordData(word, usages, forms=list(forms or []))
+            usages.append(UsageInstance(sent, word, start, end, corpus, sid, dict(extra), time))
+    return TargetWordData(word, usages, order, forms=list(forms or []), time_label=time_col or "")
+
+
+def table_columns(text: str, delimiter: str = ",") -> list[str]:
+    """The column names in the first line of a CSV or TSV text."""
+    first = next(csv.reader(io.StringIO(text), delimiter=delimiter), [])
+    return [name.strip().lstrip("\ufeff") for name in first if name.strip()]
+
+
+def times_from_corpus_names(data: TargetWordData) -> tuple[TargetWordData, list[str]]:
+    """Give each usage the time its corpus name stands for ("1999", or the middle of "1999–2003").
+
+    Returns the data and the corpus names that are not a year or a range;
+    when there are any, the data is returned unchanged.
+    """
+    from .timeline import time_from_corpus_name
+
+    times = {c: time_from_corpus_name(c) for c in data.corpus_labels}
+    unreadable = [c for c, t in times.items() if t is None]
+    if unreadable:
+        return data, unreadable
+    usages = [UsageInstance(u.sentence, u.word, u.char_start, u.char_end, u.corpus, u.sentence_id, dict(u.metadata), times[u.corpus])
+              for u in data.usages]
+    return TargetWordData(data.word, usages, data.corpus_order, data.forms, "corpus"), []
 
 
 def load_from_text_files(paths: dict[str, str | Path], word: str, *, forms=None) -> TargetWordData:

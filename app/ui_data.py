@@ -11,7 +11,9 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import torch
-from semlens.data_loading import (corpus_sentences,select_usages,load_from_csv,load_precomputed_embeddings,
+from semlens.timeline import time_from_corpus_name
+from semlens.words import MAX_WORDS,default_word,entry_counts,word_names
+from semlens.data_loading import (TargetWordData,normalise_forms,corpus_sentences,select_usages,load_from_csv,load_precomputed_embeddings,table_columns,times_from_corpus_names,
                                   validate_corpus_names,validate_embeddings,decode_text,count_words)
 from semlens.utils import keyword_in_context,usage_search_pattern
 from semlens.embeddings import embed_usages,embedded_usages_from_precomputed
@@ -19,7 +21,7 @@ from semlens.corpus_store import (CorpusCache,list_corpus_caches,estimate_storag
 from semlens.projects import project_bytes,load_project,save_project,project_filename,rename_project,delete_project
 from semlens.spaces import project_to_definition_space
 from app.state import set_data,reset_downstream_of
-from app.annotation_store import get_annotations,get_sense_classes,restore_annotations
+from app.annotation_store import get_annotations,get_sense_classes,get_options,restore_annotations
 from app.common import ROOT,STORAGE,get_model,show_usage,ordered_labels
 from app.presentation import readable_table,concordance_html
 
@@ -31,6 +33,8 @@ EXAMPLE_DESCRIPTION=('350 sentences containing *bubble* or *bubbles*, sampled fr
                      'between 1999 and 2026, one per article. The sample was not chosen for particular senses, so it mixes soap bubbles, '
                      'financial bubbles, social and political bubbles, and the support bubbles of the Covid years.\n\n'
                      'Load it, then click **Embed loaded usages** below. Publication date, title and link come with each sentence and are returned in the annotation export.')
+SAVED_SETTINGS=('definition_settings','chronological','corpus_order','distance_metric','sampling_mode','sampling_repetitions','sampling_seed',
+                'source_lines','source_split','palette_name','words_mode','word_mapping','group_by','words_shown','corpora_shown')
 MODEL_PRESETS={
     'XL-LEXEME · trained to compare word meanings in context (recommended)':'pierluigic/xl-lexeme',
     'XLM-RoBERTa large · general purpose':'FacebookAI/xlm-roberta-large',
@@ -38,6 +42,83 @@ MODEL_PRESETS={
     'BERT base · English only, small':'google-bert/bert-base-uncased',
     'Another model…':None,
 }
+# Parameters, download in GB, disk space in GB. XL-LEXEME's repository has only
+# the older .bin weights; transformers also saves a converted .safetensors copy.
+MODEL_SIZES={
+    'pierluigic/xl-lexeme':(560e6,2.2,4.5),
+    'FacebookAI/xlm-roberta-large':(561e6,2.2,2.2),
+    'FacebookAI/xlm-roberta-base':(279e6,1.1,1.1),
+    'google-bert/bert-base-uncased':(110e6,0.4,0.4),
+}
+MODEL_HELP=('The model that reads each sentence and turns each usage into numbers. All of these read many languages unless marked English.\n\n'
+            'Choose **Another model…** to use any other encoder:\n\n'
+            '- **From Hugging Face**: type its name as shown on its page (organisation/model, such as FacebookAI/xlm-roberta-base), or paste the page’s link.\n'
+            '- **From GitHub or elsewhere**: download the model’s files (config.json, the weights and the tokenizer files) into a folder, '
+            'and give the path of that folder.\n\n'
+            'The first use downloads the model and keeps it for later runs. As a rough guide, a model needs about 4 GB of disk space per billion parameters '
+            '(2 GB if it is stored in 16-bit), and about as much free memory while it embeds. Models stored only in the older .bin format can take twice the '
+            'disk space, because a converted copy is saved alongside.')
+
+
+def _parameters_text(count):
+    return f'{count/1e9:.1f} billion' if count>=1e9 else f'{round(count/1e6):,} million'
+
+
+def normalise_model_reference(text):
+    """A Hugging Face name from a typed name or a pasted page link; other text is kept as it is."""
+    text=text.strip()
+    if text.startswith('~'):
+        return str(Path(text).expanduser())
+    match=re.match(r'^(?:https?://)?(?:www\.)?huggingface\.co/([^/\s]+/[^/\s?#]+)',text)
+    return match.group(1) if match else text
+
+
+@st.cache_data(ttl=24*3600,show_spinner=False)
+def _hub_model_size(model_id):
+    """(parameters or None, safetensors bytes, .bin bytes) from Hugging Face, or None when it cannot be looked up."""
+    try:
+        from huggingface_hub import HfApi
+        info=HfApi().model_info(model_id,files_metadata=True,timeout=6)
+    except Exception:
+        return None
+    files=[(f.rfilename,f.size or 0) for f in info.siblings or []]
+    safe=sum(size for name,size in files if name.endswith('.safetensors'))
+    binary=sum(size for name,size in files if name.endswith('.bin') and 'pytorch_model' in name)
+    params=getattr(info.safetensors,'total',None) if info.safetensors else None
+    return params,safe,binary
+
+
+def _folder_weights(path):
+    return sum(f.stat().st_size for pattern in ('*.safetensors','*.bin','*.pt') for f in Path(path).expanduser().glob(pattern))
+
+
+def _model_size_note(model_id):
+    """A rough statement of the disk space and memory a model needs."""
+    if model_id in MODEL_SIZES:
+        params,download,disk=MODEL_SIZES[model_id]
+        note=f'About {_parameters_text(params)} parameters: a {download:g} GB download the first time, kept for later runs'
+        if disk>download:
+            note+=f'. Hugging Face also saves a converted copy of its weights, so allow about {disk:g} GB of disk space'
+        return note+'. Embedding needs about as much free memory as the download.'
+    if not model_id:
+        return ''
+    if Path(model_id).expanduser().is_dir():
+        size=_folder_weights(model_id)
+        return (f'This folder holds {size/1e9:.1f} GB of model weights; embedding needs about as much free memory.' if size
+                else 'No weights (.safetensors or .bin files) were found in this folder.')
+    found=_hub_model_size(model_id)
+    if found is None:
+        return ('Could not look this model up on Hugging Face (no connection, or no model of that name). '
+                'As a rough guide: about 4 GB of disk space per billion parameters, and about as much free memory.')
+    params,safe,binary=found
+    weights=safe or binary
+    if not weights:
+        return 'Hugging Face lists no weight files for this model, so its size is unknown.'
+    params=params or weights/4
+    note=f'About {_parameters_text(params)} parameters: a {weights/1e9:.1f} GB download the first time, kept for later runs'
+    if not safe:
+        note+=f'. It is stored only in the older .bin format, so allow about {2*weights/1e9:.1f} GB of disk space for a converted copy'
+    return note+'. Embedding needs about as much free memory as the download.'
 GUIDE=(
     'SemLens shows how one word is used across collections of text, such as different periods, and helps you judge whether its meaning differs between them.\n\n'
     '1. **Data & Model** (this page). Give the word and one text per corpus. SemLens finds every sentence containing the word, '
@@ -52,6 +133,58 @@ GUIDE=(
 
 def _forms(value):
     return [s.strip() for s in re.split(r'[,\n]',value) if s.strip()]
+
+
+def _set_words_mode(widget_key):
+    st.session_state.words_mode=st.session_state[widget_key]
+
+
+def render_words_question(entries,data,place):
+    """Ask whether the forms are one word or different words; with different words, which word each form belongs to."""
+    if len(entries)<2:
+        return
+    widget=f'_words_mode_{place}'
+    st.session_state[widget]=st.session_state.get('words_mode','forms')
+    mode=st.radio('Are these forms of one word, or different words to compare?',['forms','words'],key=widget,
+                  on_change=_set_words_mode,args=(widget,),
+                  format_func={'forms':'Forms of one word (run, runs, ran)','words':'Different words to compare (bubble, balloon)'}.get,
+                  help='**Forms of one word**: every usage is analysed together, as now.\n\n'
+                       '**Different words**: each word gets its own colour and can be compared with the others, across corpora or within one. '
+                       'A switch at the top of Explore, Definitions and Annotation chooses between colouring by corpus and by word, '
+                       'definitions are read as whole sentences by default, and Explore adds how often each word occurs in each corpus.')
+    if mode!='words':
+        return
+    names=word_names(entries,st.session_state.word_mapping)
+    counts=entry_counts(data,entries) if data is not None and data.word.casefold()==entries[0].casefold() else None
+    table=pd.DataFrame({'Form':entries,'Word':[names[e] for e in entries]})
+    if counts is not None:
+        # How many usages each form found, once usages of this word are loaded.
+        table['Found']=[counts[e] for e in entries]
+    st.write('Which word does each form belong to?')
+    key='word_table_'+hashlib.sha256(json.dumps(entries).encode()).hexdigest()[:12]
+    edited=st.data_editor(table,hide_index=True,width='stretch',key=key,disabled=['Form','Found'],
+                          column_config={'Form':st.column_config.TextColumn('Form',width='medium'),
+                                         'Word':st.column_config.TextColumn('Word',width='medium',
+                                             help='Give two forms the same word to count them as one. Capitals are ignored when comparing names.'),
+                                         'Found':st.column_config.NumberColumn('Found',width='small',format='%d',
+                                             help='Usages each form found among the loaded data.')})
+    mapping=dict(st.session_state.word_mapping)
+    for entry,word in zip(entries,edited['Word']):
+        word=str(word or '').strip()
+        if not word or word==default_word(entry):
+            mapping.pop(entry,None)
+        else:
+            mapping[entry]=word
+    if mapping!=st.session_state.word_mapping:
+        st.session_state.word_mapping=mapping
+        st.rerun()
+    distinct=len(set(names.values()))
+    st.caption('Give two forms the same word to count them as one. A wildcard such as balloon* is always one word. '
+               'Changing this regroups the usages at once: nothing needs loading or embedding again, and annotations stay.')
+    if distinct>MAX_WORDS:
+        st.warning(f'SemLens compares up to {MAX_WORDS} words, and these forms make {distinct}. Give some forms the same word.')
+    elif distinct<2:
+        st.info('All the forms belong to one word, so there is nothing to compare. Give them different words, or choose “Forms of one word”.')
 
 
 def _parse_cap(text):
@@ -104,10 +237,10 @@ def _load_snapshot(snapshot, *, analysis_path=None, analysis_name=None):
     if snapshot['definition_embeddings'] is not None:
         st.session_state.def_space_all=project_to_definition_space(snapshot['embedded'].embeddings,snapshot['definition_embeddings'])
     settings=snapshot['settings']
-    for key in ('definition_settings','chronological','corpus_order','distance_metric','sampling_mode','sampling_repetitions','sampling_seed','source_lines','source_split','palette_name'):
+    for key in SAVED_SETTINGS:
         if key in settings:
             st.session_state[key]=settings[key]
-    restore_annotations(snapshot['annotations'],snapshot['sense_classes'])
+    restore_annotations(snapshot['annotations'],snapshot['sense_classes'],snapshot.get('annotation_options'))
     st.session_state.pop('_corpus_stats',None)
     # Which input these source texts came from, so they are offered again only there.
     st.session_state['_source_kind']=(('Paste sentences' if st.session_state.source_lines else 'Upload raw corpora (.txt)')
@@ -214,7 +347,7 @@ def render_data():
         st.markdown(EXAMPLE_DESCRIPTION)
         if st.button('Load the example',type='primary'):
             try:
-                data=load_from_csv(EXAMPLE_PATH,'bubble',forms=['bubbles'])
+                data=load_from_csv(EXAMPLE_PATH,'bubble',forms=['bubbles'],time_col='date')
                 _set_loaded(data)
                 st.session_state.source_texts={}
                 st.session_state.saved_cache_path=None
@@ -245,6 +378,11 @@ def render_data():
                                    help='Other spellings or inflected forms to count as the same word, separated by commas: runs, running, ran. '
                                         'End a form with * to match any ending: runn* finds running and runner. '
                                         'Only whole words are matched, so run never finds runway.'))
+        try:
+            typed_entries=normalise_forms(word,forms) if word else []
+        except ValueError:
+            typed_entries=[]
+        render_words_question(typed_entries,st.session_state.target_word_data,'input')
         with st.expander('Usage selection options'):
             cap_text=st.text_input('Maximum occurrences per corpus',value='all',key=f'cap_{mode}',
                                    help='“all” uses every occurrence. A number such as 500 selects a reproducible random subset of that size from each corpus before embedding; plots show the retained usages.')
@@ -263,6 +401,12 @@ def render_data():
                                         '**Automatically**: sentences end at . ! ? and at blank lines. Titles such as Mr. and Dr. do not end a sentence.\n\n'
                                         '**One sentence per line**: for text already split into sentences, including text without punctuation.\n\n'
                                         '**One paragraph per context**: paragraphs separated by a blank line are kept whole, for when a sentence is too little context.')
+            corpus_times=False
+            if mode in {'Paste sentences','Upload raw corpora (.txt)'}:
+                corpus_times=st.checkbox('Use corpus names as times',value=False,key=f'corpus_times_{mode}',
+                                         help='When every corpus is named by a year (1999) or a range of years (1999–2003), give each usage that time: '
+                                              'the year, or the middle of the range. This adds the Over time view and colouring by time. '
+                                              'For a date per sentence, load a CSV with a date or year column instead.')
         if mode in {'Paste sentences','Upload raw corpora (.txt)'}:
             texts={}
             lines=mode=='Paste sentences'
@@ -303,6 +447,15 @@ def render_data():
                     records=corpus_sentences(texts,split=split)
                     found=select_usages(records,word,forms,match_case=match_case)
                     data,_=_cap(found,_parse_cap(cap_text))
+                    if corpus_times:
+                        data,unreadable=times_from_corpus_names(data)
+                        if unreadable:
+                            _notify('warning','No times were set: these corpus names are not a year or a range of years: '+', '.join(unreadable)+'.')
+                        else:
+                            # Corpora named by years are in time order: sort them by it.
+                            data=TargetWordData(data.word,data.usages,sorted(data.corpus_labels,key=lambda c:time_from_corpus_name(c)),
+                                                data.forms,data.time_label)
+                            st.session_state.chronological=True
                     _set_loaded(data)
                     st.session_state.source_texts=texts
                     st.session_state.source_lines=lines
@@ -323,12 +476,51 @@ def render_data():
             upload=st.file_uploader('Usage table',type=['csv','tsv'])
             st.caption('One row per sentence, with the columns **sentence** and **corpus**. Optional **start** and **end** give the character position of the '
                        'target in the sentence (counting from 0, end not included) and select exactly that occurrence; without them every occurrence of the word is found. '
-                       'Any other columns, such as a date or a source, are kept and returned with your annotations.')
+                       'Any other columns, such as a date or a source, are kept and returned with your annotations. '
+                       'With a time column (years, numbers or dates), the corpus column is optional: usages can be grouped into periods instead.')
+            delimiter='\t' if upload is not None and upload.name.endswith('.tsv') else ','
+            text=decode_text(upload.getvalue())[0] if upload is not None else ''
+            columns=table_columns(text,delimiter) if upload is not None else []
+            time_col=None
+            periods=None
+            period_method='width'
+            if upload is not None:
+                candidates=[c for c in columns if c not in {'sentence','start','end','sentence_id','matched_form'}]
+                guess=next((c for c in candidates if c.casefold() in {'date','year','time','published','publication_date'}),None)
+                chosen=st.selectbox('Time column (optional)',['None']+candidates,index=(['None']+candidates).index(guess) if guess else 0,
+                                    key=f'time_col_{upload.name}',format_func=lambda c:'No time column' if c=='None' else c,
+                                    help='A column of years (1999), other numbers, or dates (2020-05-10, 2020-05-10T02:14:27Z). '
+                                         'Each usage keeps its time, which adds the Over time view and colouring by time. '
+                                         'Dates written as 10/05/2020 are not read, because day and month order is ambiguous.')
+                time_col=None if chosen=='None' else chosen
+                if time_col:
+                    by_period='corpus' not in columns
+                    if not by_period:
+                        by_period=st.radio('Corpora',['From the corpus column','Periods formed from the time column'],horizontal=True,
+                                           key=f'time_corpora_{upload.name}')=='Periods formed from the time column'
+                    else:
+                        st.caption('There is no corpus column, so usages are grouped into periods by their time.')
+                    if by_period:
+                        c1,c2=st.columns(2)
+                        periods=int(c1.number_input('Number of periods',min_value=2,max_value=10,value=5,step=1,key='time_periods',
+                                                    help='Periods are the corpora that scores, heatmaps and frequencies compare. Up to ten.'))
+                        period_method=c2.selectbox('Periods of',['width','count'],key='time_period_method',
+                                                   format_func={'width':'Equal length','count':'About equal numbers of usages'}.get,
+                                                   help='Equal length: each period spans the same number of years. Equal numbers: each period holds about the same '
+                                                        'number of usages, which keeps sample sizes even but makes periods of different lengths. '
+                                                        'Dates are grouped by calendar year.')
             if st.button('Load usages',type='primary',disabled=upload is None):
                 try:
-                    data=load_from_csv(io.StringIO(decode_text(upload.getvalue())[0]),word,
-                                       delimiter='\t' if upload.name.endswith('.tsv') else ',',forms=forms,match_case=match_case)
+                    data=load_from_csv(io.StringIO(text),word,delimiter=delimiter,forms=forms,match_case=match_case,
+                                       time_col=time_col,periods=periods,period_method=period_method)
                     data,_=_cap(data,_parse_cap(cap_text))
+                    if time_col:
+                        undated=sum(t is None for t in data.times)
+                        if undated:
+                            _notify('warning',f'{undated:,} usages have no readable time in “{time_col}”. They are left out of the Over time view'
+                                    +(' and grouped as “No time”.' if periods else '.'))
+                        if periods:
+                            st.session_state.chronological=True
                     _set_loaded(data)
                     st.session_state.source_texts={}
                     st.session_state.saved_cache_path=None
@@ -398,6 +590,9 @@ def render_data():
             _embedding_controls(corpus_input if mode in {'Paste sentences','Upload raw corpora (.txt)'} else None)
 
     data=st.session_state.target_word_data
+    if data is not None and mode in {EXAMPLE_SOURCE,'Saved analysis','Saved word embeddings'}:
+        # These sources have no form box: ask about the loaded forms instead.
+        render_words_question(data.forms,data,'loaded')
     if data is not None:
         with st.expander('Review loaded occurrences',key='review_occurrences',on_change='rerun') as panel:
             if panel.open:
@@ -493,13 +688,20 @@ def _embedding_controls(corpus_input):
                                  'so usages can differ because the topic differs.')
     rep='word' if representation=='Target word' else 'sentence'
     with st.expander('Advanced embedding settings'):
-        preset=st.selectbox('Language model',list(MODEL_PRESETS),key='encoder_preset',
-                            help='The model that reads each sentence and turns each usage into numbers. The first use of a model downloads it '
-                                 '(about 2 GB for the large ones) and later uses start from the saved copy. All of these read many languages unless marked English.')
+        preset=st.selectbox('Language model',list(MODEL_PRESETS),key='encoder_preset',help=MODEL_HELP)
         model_id=MODEL_PRESETS[preset]
         if model_id is None:
-            model_id=st.text_input('Encoder model',value='pierluigic/xl-lexeme',key='encoder_model')
-            st.caption('A Hugging Face encoder model ID, such as FacebookAI/xlm-roberta-base, or the path of a model folder on this computer.')
+            typed=st.text_input('Encoder model',value='pierluigic/xl-lexeme',key='encoder_model',
+                                placeholder='organisation/model, a Hugging Face link, or a folder on this computer')
+            st.caption('A model from Hugging Face: its name (such as FacebookAI/xlm-roberta-base) or its page’s link. '
+                       'A model from GitHub or elsewhere: download its files into a folder (config.json, the weights and the tokenizer files) and give the folder’s path.')
+            model_id=normalise_model_reference(typed)
+            if re.search(r'github\.com',model_id,re.I):
+                st.warning('A GitHub link cannot be loaded directly: GitHub pages hold code, and the model files usually need downloading separately. '
+                           'Download the model’s files into a folder (from the repository or its releases), then give the path of that folder here.')
+        note=_model_size_note(model_id)
+        if note:
+            st.caption(note)
         layer=int(st.number_input('Layer (-1 = final output)',value=-1,step=1,key='encoder_layer',
                                   help='Negative values count back from the top: -1 is the final output, -2 the penultimate layer, -3 the one before it. '
                                        '0 is the input embedding layer; 1 and higher count transformer layers from the bottom.'))
@@ -589,15 +791,16 @@ def render_save_analysis():
         if '_analysis_save_name' not in st.session_state:
             st.session_state['_analysis_save_name']=data.word
         name=st.text_input('Analysis name',key='_analysis_save_name')
-        settings={k:st.session_state[k] for k in ('definition_settings','chronological','corpus_order','distance_metric','sampling_mode','sampling_repetitions','sampling_seed','source_lines','source_split','palette_name')}
+        settings={k:st.session_state[k] for k in SAVED_SETTINGS}
         if st.button('Prepare analysis file'):
             content=project_bytes(data,embedded,definitions=st.session_state.definitions_formatted,
                 definition_embeddings=st.session_state.definition_embeddings,annotations=get_annotations(),
-                sense_classes=get_sense_classes(),settings=settings,source_texts=st.session_state.source_texts)
+                sense_classes=get_sense_classes(),settings=settings,source_texts=st.session_state.source_texts,
+                annotation_options=get_options())
             st.session_state['_prepared_analysis']=(content,st.session_state.data_revision,
-                json.dumps([get_annotations(),get_sense_classes(),settings,st.session_state.definitions_formatted],sort_keys=True))
+                json.dumps([get_annotations(),get_sense_classes(),get_options(),settings,st.session_state.definitions_formatted],sort_keys=True))
         prepared=st.session_state.get('_prepared_analysis')
-        stamp=json.dumps([get_annotations(),get_sense_classes(),settings,st.session_state.definitions_formatted],sort_keys=True)
+        stamp=json.dumps([get_annotations(),get_sense_classes(),get_options(),settings,st.session_state.definitions_formatted],sort_keys=True)
         if prepared and prepared[1:]==(st.session_state.data_revision,stamp):
             content=prepared[0]
             try:

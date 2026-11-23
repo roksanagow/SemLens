@@ -11,14 +11,20 @@ import numpy as np
 import torch
 from .data_loading import TargetWordData, UsageInstance, validate_embeddings
 from .embeddings import embedded_usages_from_precomputed
+from .annotations import normalise_annotations
 
 
 def project_bytes(data, embedded, *, definitions=None, definition_embeddings=None, annotations=None,
-                  sense_classes=None, settings=None, source_texts=None):
+                  sense_classes=None, settings=None, source_texts=None, annotation_options=None):
     ids={i:u.usage_id for i,u in enumerate(data.usages)}
     manifest={'version':1,'word':data.word,'forms':data.forms,'corpus_order':data.corpus_labels,
+              'time_label':data.time_label,
               'usages':[asdict(u) for u in data.usages], 'embedding_metadata':embedded.metadata,
-              'definitions':list(definitions or []),'annotations':{ids[i]:v for i,v in (annotations or {}).items()},
+              'definitions':list(definitions or []),
+              # Each value is {sense: rating or null}; files from before graded and
+              # multiple-sense annotation hold a single sense name instead.
+              'annotations':{ids[i]:dict(v) for i,v in normalise_annotations(annotations).items()},
+              'annotation_options':dict(annotation_options or {}),
               'sense_classes':list(sense_classes or []),'settings':settings or {},'source_texts':source_texts or {}}
     output=io.BytesIO()
     with zipfile.ZipFile(output,'w',compression=zipfile.ZIP_DEFLATED) as z:
@@ -41,7 +47,7 @@ def load_project(source):
         if manifest.get('version')!=1:
             raise ValueError('Unsupported SemLens analysis version.')
         data=TargetWordData(manifest['word'],[UsageInstance(**u) for u in manifest['usages']],
-                            manifest['corpus_order'],manifest.get('forms',[]))
+                            manifest['corpus_order'],manifest.get('forms',[]),manifest.get('time_label',''))
         embs=validate_embeddings(torch.from_numpy(np.load(io.BytesIO(z.read('usages.npy')),allow_pickle=False)),len(data))
         embedded=embedded_usages_from_precomputed(data,embs,metadata=manifest.get('embedding_metadata',{}))
         defs=None
@@ -50,9 +56,10 @@ def load_project(source):
             if defs.shape[1]!=embedded.dim:
                 raise ValueError('Saved definition vectors do not match usage dimensions.')
         annotation_map=manifest.get('annotations',{})
-        annotations={i:annotation_map[u.usage_id] for i,u in enumerate(data.usages) if u.usage_id in annotation_map}
+        annotations=normalise_annotations({i:annotation_map[u.usage_id] for i,u in enumerate(data.usages) if u.usage_id in annotation_map})
         return {'data':data,'embedded':embedded,'definitions':manifest.get('definitions',[]),
                 'definition_embeddings':defs,'annotations':annotations,'sense_classes':manifest.get('sense_classes',[]),
+                'annotation_options':manifest.get('annotation_options') or None,
                 'settings':manifest.get('settings',{}),'source_texts':manifest.get('source_texts',{})}
 
 

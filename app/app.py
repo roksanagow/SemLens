@@ -31,6 +31,12 @@ with st.sidebar:
             st.caption(f'{corpus}: {len(data.indices_for_corpus(corpus)):,}')
     with st.expander('Display & comparison settings'):
         revision=st.session_state.data_revision
+        if data is not None and len(data.forms)>1:
+            st.session_state['_words_mode_sidebar']=st.session_state.words_mode
+            st.radio('The forms are',['forms','words'],key='_words_mode_sidebar',horizontal=True,
+                     format_func={'forms':'One word','words':'Different words'}.get,
+                     on_change=lambda:st.session_state.update(words_mode=st.session_state['_words_mode_sidebar']),
+                     help='Different words get their own colours and comparisons; which word each form belongs to is set in Data & Model.')
         palettes=palette_names()
         st.session_state.palette_name=st.selectbox('Colour palette',palettes,index=palettes.index(st.session_state.palette_name),key=f'palette_{revision}',
             help='Colours for the corpora. The palettes marked colourblind are safe for the common forms of colour blindness. '

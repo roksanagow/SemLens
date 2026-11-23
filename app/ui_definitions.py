@@ -13,6 +13,7 @@ from semlens.embeddings import mark_target
 from app.common import get_model
 from app.state import reset_downstream_of
 from app.ui_explore import render_plot,render_comparison,render_definition_distribution
+from app.grouping import current_view,render_grouping_controls,words_active
 from app.presentation import plot_chart,readable_table
 import pandas as pd
 
@@ -69,6 +70,11 @@ def render_definitions():
         st.info('Load data and embed usages first.')
         return
     data=st.session_state.target_word_data
+    render_grouping_controls(data,'definitions')
+    several=words_active(data)
+    if several:
+        st.caption('With different words, one set of definitions serves as shared axes for all of them. By default each definition is read '
+                   'on its own, as a whole sentence (Definition only, Whole input under Advanced definition settings), so it is not tied to one word.')
     sources=['Manual input','Wiktionary','JSON file']
     remembered=st.session_state.get('_definition_source')
     source=st.selectbox('Definition source',sources,index=sources.index(remembered) if remembered in sources else 0)
@@ -144,7 +150,8 @@ def render_definitions():
     with st.expander('Advanced definition settings'):
         presets={'Word: definition':'{word}: {definition}','Definition: word':'{definition}: {word}',
                  'Definition only':'{definition}','Custom':'custom'}
-        current=settings.get('template','{word}: {definition}')
+        # Different words: a definition is not tied to the target word, so by default it is read alone.
+        current=settings.get('template','{definition}' if several else '{word}: {definition}')
         default=next((name for name,template in presets.items() if template==current),'Custom')
         preset=st.selectbox('Input format',list(presets),index=list(presets).index(default))
         template=st.text_input('Template',value=current,help='Use {word} and {definition}.') if preset=='Custom' else presets[preset]
@@ -203,9 +210,12 @@ def render_definitions():
     labels=[s.split(': ',1)[-1] if ': ' in s else s for s in st.session_state.definitions_formatted]
     st.divider()
     st.caption('Each coordinate is cosine distance to a definition. Smaller values mean closer to that definition.')
-    render_plot(data,space,key='defs',definition_labels=labels)
-    render_definition_distribution(data,space,labels)
-    render_comparison(data,space,key='defs',definition_labels=labels)
+    view=current_view(data)
+    shown=view.embeddings(space)
+    render_plot(view.data,shown,key='defs',definition_labels=labels,hover_notes=view.hover_notes(),
+                download_columns=view.download_columns(),noun=view.noun)
+    render_definition_distribution(view.data,shown,labels)
+    render_comparison(view.data,shown,key='defs',definition_labels=labels,noun=view.noun)
     with st.expander('Definition similarity and correlation',key='definition_heatmaps',on_change='rerun') as panel:
         if panel.open:
             vectors=st.session_state.definition_embeddings.numpy()

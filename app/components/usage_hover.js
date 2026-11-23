@@ -91,9 +91,20 @@
     });
   }
 
+  // The rating box opens after a click or lasso: put the cursor in it, so a
+  // rating can be typed straight away and saved with Enter.
+  function focusRating() {
+    const input = document.querySelector('[role="dialog"] .st-key-semlens_rating_input input');
+    if (input && !input.dataset.semlensFocused) {
+      input.dataset.semlensFocused = 'true';
+      input.focus();
+    }
+  }
+
   function scan() {
     scanFrame = null;
     centreTargets();
+    focusRating();
     for (const [chart, handlers] of bindings) {
       if (!chart.isConnected) unbind(chart, handlers);
     }

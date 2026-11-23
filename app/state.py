@@ -12,8 +12,11 @@ _DEFAULTS = {
     'palette_name':'Tab10 (matplotlib)', 'distance_metric':'cosine',
     'sampling_mode':'balanced', 'sampling_repetitions':20, 'sampling_seed':42,
     'data_revision':0, 'chronological':False, 'saved_cache_path':None,
-    'theme_mode':'Dark', 'hidden_corpora':[], 'source_split':'auto',
+    'theme_mode':'Light', 'hidden_corpora':[], 'source_split':'auto',
     'point_size':9, 'point_opacity':0.8, 'figure_format':'png',
+    # Different words: whether the forms are one word, which word each typed entry
+    # belongs to, what the workspaces group by, and which words or corpora they show.
+    'words_mode':'forms', 'word_mapping':{}, 'group_by':'corpus', 'words_shown':None, 'corpora_shown':None,
 }
 
 

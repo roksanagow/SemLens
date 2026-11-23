@@ -289,7 +289,7 @@ def test_ranked_sentence_search_and_independently_scrollable_cells():
 def test_theme_and_destination_navigation():
     at,_=seeded_app(2)
     assert widget(at,'selectbox','Data source').value=='Upload raw corpora (.txt)'
-    assert widget(at,'radio','Theme').value=='Dark'
+    assert widget(at,'radio','Theme').value=='Light'
     widget(at,'radio','Theme').set_value('Dark').run()
     widget(at,'button','Continue to Explore').click().run()
     assert not at.exception
@@ -382,14 +382,14 @@ def test_auto_annotation_consumes_events_once_and_undo_survives_rerun(monkeypatc
     monkeypatch.setattr(store,'st',fake)
     result={'selection_event':('chart',1),'clicked_points':[2,4]}
     assert ui.assign_new_selection(result,'finance')
-    assert store.get_annotations()=={2:'finance',4:'finance'}
+    assert store.get_annotations()=={2:{'finance':None},4:{'finance':None}}
     assert not ui.assign_new_selection(result,'river')
     store.undo_annotations()
     assert store.get_annotations()=={}
     assert not ui.assign_new_selection(result,'finance')
     result['selection_event']=('chart',2)
     assert ui.assign_new_selection(result,'river')
-    assert store.get_annotations()=={2:'river',4:'river'}
+    assert store.get_annotations()=={2:{'river':None},4:{'river':None}}
 
 
 def test_input_loads_forms_from_all_three_pasted_corpora():
@@ -425,7 +425,7 @@ def test_annotation_invalidation_preserves_labels_on_reembedding(monkeypatch):
     session['_annot_coords_cache']={'old':np.ones((2,2))}
     old_revision=session.data_revision
     state.reset_downstream_of('embeddings')
-    assert store.get_annotations()=={0:'finance'}
+    assert store.get_annotations()=={0:{'finance':None}}
     assert session.data_revision>old_revision
     assert '_annot_coords_cache' not in session
     new=load_from_sentences(['The river bank is steep.','The bank is closed.'],'bank',['old','new'])
@@ -567,7 +567,7 @@ def test_manage_saved_files_rename_collision_cancel_and_delete(tmp_path,monkeypa
     assert not at.exception
     assert not renamed.exists() and other.read_bytes()==content
     assert at.session_state['target_word_data'].sentences==data.sentences
-    assert at.session_state['_annotation_store']['annotations']=={0:'finance'}
+    assert at.session_state['_annotation_store']['annotations']=={0:{'finance':None}}
     torch.testing.assert_close(at.session_state['embedded_usages'].embeddings,embedded.embeddings)
     widget(at,'button','Delete saved file…').click().run()
     widget(at,'button','Confirm deletion').click().run()
@@ -594,7 +594,7 @@ def test_open_edit_and_save_analysis_uses_current_name_and_protects_other_files(
     widget(at,'button','Prepare analysis file').click().run()
     widget(at,'button','Save analysis locally').click().run()
     assert not at.exception
-    assert load_project(original)['annotations']=={0:'finance'}
+    assert load_project(original)['annotations']=={0:{'finance':None}}
     # A changed name after preparation must be honoured, with no second encode/prepare.
     widget(at,'text_input','Analysis name').set_value('Other study').run()
     assert widget(at,'button','Save analysis locally').disabled
@@ -603,7 +603,7 @@ def test_open_edit_and_save_analysis_uses_current_name_and_protects_other_files(
     widget(at,'button','Save analysis locally').click().run()
     assert not at.exception
     copy=tmp_path/'projects'/'Separate copy.semlens'
-    assert load_project(copy)['annotations']=={0:'finance'}
+    assert load_project(copy)['annotations']=={0:{'finance':None}}
     assert original.exists() and other.read_bytes()==content
     # A fresh session can reopen the renamed copy with its edited annotations.
     fresh=AppTest.from_file('app/app.py',default_timeout=30).run()
@@ -611,7 +611,7 @@ def test_open_edit_and_save_analysis_uses_current_name_and_protects_other_files(
     widget(fresh,'selectbox','Saved locally').set_value(copy).run()
     widget(fresh,'button','Open saved analysis').click().run()
     assert not fresh.exception
-    assert fresh.session_state['_annotation_store']['annotations']=={0:'finance'}
+    assert fresh.session_state['_annotation_store']['annotations']=={0:{'finance':None}}
 
 
 def scatter_figure(at):
@@ -1115,7 +1115,7 @@ def test_annotation_tools_rename_import_and_show_remaining(monkeypatch):
     widget(at,'button','Rename').click().run()
     assert not at.exception
     saved=at.session_state['_annotation_store']
-    assert saved['sense_classes']==['finance','river'] and saved['annotations']=={0:'finance',1:'finance',5:'river'}
+    assert saved['sense_classes']==['finance','river'] and saved['annotations']=={0:{'finance':None},1:{'finance':None},5:{'river':None}}
     assert saved['active_sense_class']=='finance'
     # Only what is left to annotate is drawn, and nothing hidden can be selected.
     widget(at,'toggle','Show only usages without a sense').set_value(True).run()
@@ -1130,10 +1130,10 @@ def test_annotation_tools_rename_import_and_show_remaining(monkeypatch):
                         {'usage_id':'','sentence':data.usages[6].sentence,'corpus':'corpus_1','start':'4','end':'8','sense':'finance'},
                         {'usage_id':'unknown','sentence':'Not loaded.','corpus':'corpus_1','start':'0','end':'3','sense':'finance'},
                         {'usage_id':data.usages[3].usage_id,'sentence':'','corpus':'','start':'','end':'','sense':''}])
-    assert ui.import_annotations(data,table)==(2,1,['river'])
-    assert store.get_annotations()=={0:'finance',2:'river',6:'finance'} and store.get_sense_classes()==['finance','river']
+    assert ui.import_annotations(data,table)==(2,1,['river'],[])
+    assert store.get_annotations()=={0:{'finance':None},2:{'river':None},6:{'finance':None}} and store.get_sense_classes()==['finance','river']
     store.undo_annotations()
-    assert store.get_annotations()=={0:'finance'}
+    assert store.get_annotations()=={0:{'finance':None}}
     with pytest.raises(ValueError,match='column named sense'):
         ui.import_annotations(data,pd.DataFrame([{'usage_id':'x'}]))
     with pytest.raises(ValueError,match='No row with a sense matches'):

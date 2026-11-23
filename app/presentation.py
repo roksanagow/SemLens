@@ -7,7 +7,7 @@ import streamlit as st
 
 
 def apply_theme():
-    dark=st.session_state.get('theme_mode','Dark')=='Dark'
+    dark=st.session_state.get('theme_mode','Light')=='Dark'
     bg,surface,text,border=('#0e1117','#1b2230','#f1f5f9','#475569') if dark else ('#ffffff','#f1f5f9','#172033','#cbd5e1')
     help_ink,help_edge,help_top,help_bottom=('#bce9d8','#49645e','#29413d','#1b2c35') if dark else ('#28644f','#b6cec2','#ffffff','#e8f2ec')
     help_hover_ink,help_hover_edge,help_hover_top,help_hover_bottom=('#edfff7','#79b79f','#355b4e','#233d40') if dark else ('#174b37','#7da78f','#f7fff9','#dceee3')
@@ -24,7 +24,8 @@ def apply_theme():
     [data-baseweb="popover"], [role="listbox"], [role="option"] {{ background:{surface}; color:{text}; }}
     .stApp :is(input,textarea) {{ -webkit-text-fill-color:{text}; caret-color:{text}; }}
     .stApp [data-baseweb="select"] input {{ background:transparent; }}
-    .stApp button[kind="secondary"], .stApp button[kind="secondaryFormSubmit"] {{ background:{surface}; color:{text}; border-color:{border}; }}
+    .stApp button[kind="secondary"], .stApp button[kind="secondaryFormSubmit"],
+    .stApp button[kind="segmented_control"], .stApp button[kind="pills"] {{ background:{surface}; color:{text}; border-color:{border}; }}
     .stApp :is(details,[data-testid="stForm"]) {{ border-color:{border}; }}
     .stApp summary:hover, .stApp details[open] > summary,
     .stApp [data-testid="stNumberInput"] button,
@@ -124,7 +125,7 @@ def apply_theme():
 
 
 def plot_chart(fig, **kwargs):
-    dark=st.session_state.get('theme_mode','Dark')=='Dark'
+    dark=st.session_state.get('theme_mode','Light')=='Dark'
     text='#f1f5f9' if dark else '#172033'
     grid='#334155' if dark else '#e2e8f0'
     fig.update_layout(template='plotly_dark' if dark else 'plotly_white',
@@ -156,7 +157,7 @@ def readable_table(frame, *, text_columns=(), max_text_width=None, **kwargs):
             # A conservative character width also accommodates non-Latin scripts.
             length=max((len(str(v).expandtabs(4)) for v in frame[name]),default=len(name))
             config[name]=st.column_config.TextColumn(name,width=max(320,16*length+40))
-    dark=st.session_state.get('theme_mode','Dark')=='Dark'
+    dark=st.session_state.get('theme_mode','Light')=='Dark'
     frame=frame.style.set_properties(**{'background-color':'#1b2230' if dark else '#ffffff',
                                        'color':'#f1f5f9' if dark else '#172033'})
     st.dataframe(frame,hide_index=True,width='stretch',column_config=config,**kwargs)

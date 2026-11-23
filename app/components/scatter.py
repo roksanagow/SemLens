@@ -9,6 +9,7 @@ import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
 from app.presentation import plot_chart
+from semlens.annotations import normalise_annotations
 
 from semlens.utils import (
     format_hover_text,
@@ -104,10 +105,59 @@ def _extract_box_bounds(selection: object) -> tuple[float, float, float, float] 
     return None
 
 
+def _rgba(hex_colour: str, alpha: float) -> str:
+    h = hex_colour.lstrip("#")
+    r, g, b = (int(h[k:k + 2], 16) for k in (0, 2, 4))
+    return f"rgba({r},{g},{b},{alpha:.2f})"
+
+
+def _sense_traces(coords_2d, shown, annotations, sense_classes, hover_texts, scale=None, selectable=False):
+    """One outline trace per sense class.
+
+    A usage with several senses gets nested outlines, one size step per sense
+    in the order they were given. With a rating scale, a weaker rating draws a
+    thinner, paler outline.
+    """
+    traces = []
+    if not annotations or not sense_classes:
+        return traces
+    palette = get_palette("Tol Bright (colourblind)")
+    colours = {s: palette[i % len(palette)] for i, s in enumerate(sense_classes)}
+    known = set(sense_classes)
+    for sense_name in sense_classes:
+        sense_idx = [i for i in shown if sense_name in annotations.get(i, {})]
+        if not sense_idx:
+            continue
+        sizes, widths, line_colours = [], [], []
+        for i in sense_idx:
+            ordered = [s for s in annotations[i] if s in known]
+            sizes.append(13 + 6 * ordered.index(sense_name))
+            rating = annotations[i][sense_name]
+            if scale and rating is not None:
+                strength = 1.0 if scale <= 1 else (min(rating, scale) - 1) / (scale - 1)
+                widths.append(1.2 + 1.8 * strength)
+                line_colours.append(_rgba(colours[sense_name], 0.35 + 0.65 * strength))
+            else:
+                widths.append(2.5)
+                line_colours.append(colours[sense_name])
+        traces.append(go.Scatter(
+            x=coords_2d[sense_idx, 0].tolist(),
+            y=coords_2d[sense_idx, 1].tolist(),
+            mode="markers",
+            name=f"⬡ {sense_name}",
+            text=[hover_texts[i] for i in sense_idx],
+            hoverinfo="text",
+            customdata=sense_idx if selectable else None,
+            marker=dict(size=sizes, color="rgba(0,0,0,0)", line=dict(width=widths, color=line_colours), symbol="diamond"),
+        ))
+    return traces
+
+
 def _build_figure_multi_trace(
     coords_2d, corpus_per_point, hover_texts, unique_corpora, corpus_colour_map,
     annotations, sense_classes, definition_anchor_coords, definition_anchor_labels,
     show_definition_anchors, highlight_indices, hidden=frozenset(), highlight_label="Highlighted",
+    annotation_scale=None,
 ):
     """Build figure with one trace per corpus (for display-only charts)."""
     fig = go.Figure()
@@ -136,6 +186,7 @@ def _build_figure_multi_trace(
             name=corpus_name,
             text=[hover_texts[i] for i in mask],
             hoverinfo="text",
+            customdata=mask,
             meta=dict(semlens_corpus=corpus_name),
             visible="legendonly" if corpus_name in hidden else True,
             marker=dict(
@@ -145,26 +196,8 @@ def _build_figure_multi_trace(
         ))
 
     # Annotation overlay
-    if annotations and sense_classes:
-        sense_palette = get_palette("Tol Bright (colourblind)")
-        sense_colour_map = {s: sense_palette[i % len(sense_palette)] for i, s in enumerate(sense_classes)}
-        for sense_name in sense_classes:
-            sense_idx = [i for i in shown if annotations.get(i) == sense_name]
-            if not sense_idx:
-                continue
-            fig.add_trace(go.Scatter(
-                x=coords_2d[sense_idx, 0].tolist(),
-                y=coords_2d[sense_idx, 1].tolist(),
-                mode="markers",
-                name=f"⬡ {sense_name}",
-                text=[hover_texts[i] for i in sense_idx],
-                hoverinfo="text",
-                marker=dict(
-                    size=13, color="rgba(0,0,0,0)",
-                    line=dict(width=2.5, color=sense_colour_map[sense_name]),
-                    symbol="diamond",
-                ),
-            ))
+    for trace in _sense_traces(coords_2d, shown, annotations, sense_classes, hover_texts, annotation_scale):
+        fig.add_trace(trace)
 
     # Definition anchors
     if show_definition_anchors and definition_anchor_coords is not None and definition_anchor_labels is not None:
@@ -206,6 +239,7 @@ def _build_figure_annotation(
     coords_2d, corpus_per_point, hover_texts, unique_corpora, corpus_colour_map,
     annotations, sense_classes, interaction_mode, hidden=frozenset(),
     highlight_indices=None, highlight_label="Highlighted", highlight_colour="#ffffff", omit=frozenset(),
+    annotation_scale=None,
 ):
     """Build the selectable figure, with one trace per corpus.
 
@@ -262,27 +296,8 @@ def _build_figure_annotation(
         ))
 
     # Annotation overlay — sense diamonds
-    if annotations and sense_classes:
-        sense_palette = get_palette("Tol Bright (colourblind)")
-        sense_colour_map = {s: sense_palette[i % len(sense_palette)] for i, s in enumerate(sense_classes)}
-        for sense_name in sense_classes:
-            sense_idx = [i for i in shown if annotations.get(i) == sense_name]
-            if not sense_idx:
-                continue
-            fig.add_trace(go.Scatter(
-                x=coords_2d[sense_idx, 0].tolist(),
-                y=coords_2d[sense_idx, 1].tolist(),
-                mode="markers",
-                name=f"⬡ {sense_name}",
-                text=[hover_texts[i] for i in sense_idx],
-                hoverinfo="text",
-                customdata=sense_idx,
-                marker=dict(
-                    size=13, color="rgba(0,0,0,0)",
-                    line=dict(width=2.5, color=sense_colour_map[sense_name]),
-                    symbol="diamond",
-                ),
-            ))
+    for trace in _sense_traces(coords_2d, shown, annotations, sense_classes, hover_texts, annotation_scale, selectable=True):
+        fig.add_trace(trace)
 
     # Search matches: a ring around each matching usage that is on show. The
     # ring carries the usage's position too, so clicking it selects that usage.
@@ -310,7 +325,7 @@ def render_scatter(
     sentences: list[str],
     target_word: str,
     *,
-    annotations: dict[int, str] | None = None,
+    annotations: dict[int, dict[str, int | None]] | None = None,
     sense_classes: list[str] | None = None,
     palette_name: str = "Tab10 (matplotlib)",
     title: str = "Usage Embeddings",
@@ -329,6 +344,11 @@ def render_scatter(
     hidden_corpora: list[str] | tuple[str, ...] = (),
     blind: bool = False,
     omit_indices: list[int] | tuple[int, ...] = (),
+    annotation_scale: int | None = None,
+    hover_notes: list[str | None] | None = None,
+    colour_values: list[float | None] | None = None,
+    colour_title: str = "",
+    extra_traces: list | None = None,
 ) -> dict:
     """Render an interactive Plotly scatter plot in Streamlit.
 
@@ -344,12 +364,23 @@ def render_scatter(
         Draw every corpus in the same neutral colour and leave the corpus out
         of the hover text, so usages can be annotated without knowing their
         corpus. Legend entries keep their names and still switch corpora off.
+    annotation_scale : int, optional
+        The top of the rating scale when annotation is graded; ratings then
+        set the strength of each sense outline.
+    hover_notes : list of str, optional
+        An extra line for each point's hover text, such as its senses or date.
+    colour_values : list of float, optional
+        Colour points along a continuous scale (such as time) instead of by
+        corpus. The legend still switches corpora on and off.
+    extra_traces : list, optional
+        Further traces drawn on top, such as a trend line.
 
     Returns
     -------
     dict
         ``{"clicked_points": list[int]}`` — selected point indices.
     """
+    annotations = normalise_annotations(annotations) if annotations else annotations
     unique_corpora = list(dict.fromkeys(corpus_order or corpus_per_point))
     palette = palette_for(palette_name, len(unique_corpora))
     corpus_colour_map = {c: BLIND_COLOUR if blind else palette[i] for i, c in enumerate(unique_corpora)}
@@ -358,8 +389,11 @@ def render_scatter(
     hover_texts = []
     for i, (sent, corp) in enumerate(zip(sentences, corpus_per_point)):
         nearest_def = definition_labels_per_point[i] if definition_labels_per_point else None
-        hover_texts.append(format_hover_text(sent,target_word,None if blind else corp,nearest_definition=nearest_def,
-                                            char_span=char_spans[i] if char_spans is not None else None))
+        text = format_hover_text(sent,target_word,None if blind else corp,nearest_definition=nearest_def,
+                                 char_span=char_spans[i] if char_spans is not None else None)
+        if hover_notes and hover_notes[i]:
+            text += "<br>" + wrap_hover_html(hover_notes[i])
+        hover_texts.append(text)
 
     if enable_selection:
         fig = _build_figure_annotation(
@@ -367,15 +401,40 @@ def render_scatter(
             annotations, sense_classes, interaction_mode, hidden,
             highlight_indices, highlight_label,
             # Unlike any corpus or sense colour, and visible on either theme.
-            "#ffffff" if st.session_state.get('theme_mode', 'Dark') == 'Dark' else "#111827",
-            frozenset(omit_indices),
+            "#ffffff" if st.session_state.get('theme_mode', 'Light') == 'Dark' else "#111827",
+            frozenset(omit_indices), annotation_scale,
         )
     else:
         fig = _build_figure_multi_trace(
             coords_2d, corpus_per_point, hover_texts, unique_corpora, corpus_colour_map,
             annotations, sense_classes, definition_anchor_coords, definition_anchor_labels,
-            show_definition_anchors, highlight_indices, hidden, highlight_label,
+            show_definition_anchors, highlight_indices, hidden, highlight_label, annotation_scale,
         )
+
+    if colour_values is not None and not blind:
+        values = [np.nan if v is None else float(v) for v in colour_values]
+        known = [v for v in values if np.isfinite(v)]
+        for rank, trace in enumerate(list(fig.data)):
+            corpus = (trace.meta or {}).get('semlens_corpus')
+            if corpus is None or trace.customdata is None:
+                continue
+            trace.marker.color = [values[int(i)] for i in trace.customdata]
+            trace.marker.coloraxis = "coloraxis"
+            # Plotly cannot draw a legend marker for points coloured along a
+            # scale, so each corpus gets a grey stand-in entry. Grouped with the
+            # corpus, a click on it still hides and shows that corpus's points.
+            trace.legendgroup = corpus
+            trace.showlegend = False
+            fig.add_trace(go.Scatter(
+                x=[None], y=[None], mode="markers", name=corpus, legendgroup=corpus, legendrank=rank + 1,
+                meta=dict(semlens_corpus=corpus, semlens_legend_entry=True), visible=trace.visible,
+                marker=dict(size=9, color=BLIND_COLOUR), hoverinfo="skip",
+            ))
+        if known:
+            fig.update_layout(coloraxis=dict(colorscale="Viridis", cmin=min(known), cmax=max(known),
+                                             colorbar=dict(title=dict(text=colour_title, side="right"), thickness=14, len=0.8)))
+    for trace in extra_traces or []:
+        fig.add_trace(trace)
 
     # The title sits at the very top and the legend below it, from the left, with
     # room for as many legend rows as there are entries, so neither covers the other.
@@ -415,7 +474,9 @@ def render_scatter(
         elif trace.name == '_hit_area':
             trace.marker.size = size + 13
         elif trace.marker is not None and trace.marker.size is not None and not str(trace.name).startswith('Definitions'):
-            trace.marker.size = trace.marker.size + (size - 9)
+            current = trace.marker.size
+            trace.marker.size = ([v + (size - 9) for v in current] if isinstance(current, (list, tuple))
+                                 else current + (size - 9))
 
     if enable_selection:
         if interaction_mode == "click":

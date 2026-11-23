@@ -72,6 +72,12 @@
 - [x] Review: frequency per million words, word-form counts, sortable and searchable concordance.
 - [x] Model presets; display settings for point size, opacity, sequential palette, figure format, order by name.
 - [x] Plot options: PCA components, UMAP and t-SNE settings following the vector distance, search in every plot, CSV downloads of plot positions, scores and definition distances.
+- [x] One-line launcher: `semlens` command (`uvx --from git+… semlens`); app packaged with its example data; installed copies save to `~/.semlens` or `SEMLENS_HOME`.
+- [x] Graded annotation (off by default, in a collapsed **Annotation options** box): a rating for each sense on a user-set scale (default 4), rating picker, graded outlines, mean-rating table and rating threshold for frequencies, `rating` / `sense:<name>` export and import.
+- [x] Several senses per usage (off by default, in both normal and graded annotation): click toggles, lasso adds, nested outlines, per-sense list columns, per-sense counts with side-by-side bars, and a guarded switch-off that offers to keep only the first sense.
+- [x] Continuous time: a time column in CSV/TSV (years, numbers, ISO dates), corpus names as times, periods of equal length or equal size (no corpus column needed), the Over time view (time against PC1/PC2 or a definition, with a moving average), colour by time, dates in hovers, times in saved analyses and CSVs. The example dataset now carries its publication dates.
+- [x] Load previous annotations from the Annotation workspace: a saved analysis (local or file) or an annotation CSV onto the loaded usages, matched by usage ID, then sentence and position, then sentence; with nothing loaded, opens a saved analysis whole.
+- [x] Different words: a forms question and form-to-word table in Data & Model; a global Corpus/Word switch with a Words/Corpora shown filter at the top of Explore, Definitions and Annotation; Words by corpus; Words over time; sentence-level definitions by default; `word` column in exports.
 - [x] Annotation: list (concordance) annotation, remaining-only view, class renaming and merging, annotation import.
 
 ## Discuss before further implementation
@@ -88,4 +94,3 @@
 - [ ] More linguistic sentence segmentation and automatic morphological expansion; current form matching is explicit and raw-text splitting is heuristic.
 - [ ] Broader model/language validation and guidance on useful intermediate layers.
 - [ ] More efficient very-large-corpus matching; current SAMD still needs the full pairwise distance matrix.
-- [x] One-line launcher: `semlens` command (`uvx --from git+… semlens`); app packaged with its example data; installed copies save to `~/.semlens` or `SEMLENS_HOME`.

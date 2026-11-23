@@ -57,7 +57,13 @@ GLOSSARY=(
     '**Definition space** · each usage described by its distance to each definition you supply. A way to ask which of your candidate senses a usage is nearest.\n\n'
     '**Change scores (APD, PRT, AMD, SAMD)** · single numbers for how far apart the usages of two corpora are. The (?) beside each gives its formula.\n\n'
     '**Nearest counterpart** · for a usage in one corpus, the most similar usage in another. A usage with no close counterpart is a candidate new or lost use.\n\n'
-    '**Sense class** · a label you define and assign to usages when annotating.')
+    '**Sense class** · a label you define and assign to usages when annotating.\n\n'
+    '**Graded annotation** · an option in Annotation: each sense a usage has also gets a rating, from 1 (barely) to the top of the scale (clearly). '
+    'A second option lets one usage have several senses.\n\n'
+    '**Different words** · with more than one form, Data & Model asks whether they are forms of one word or different words to compare. '
+    'Different words get their own colours, and a switch at the top of each workspace compares either corpora or words.\n\n'
+    '**Time** · a year, date or other number for each usage, from a column of a CSV table or from corpus names such as 1999–2003. '
+    'It adds the **Over time** view (time across, a position up) and colouring points by time; periods formed from it act as corpora.')
 
 
 def natural_sort_key(text):

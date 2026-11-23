@@ -130,7 +130,7 @@ def test_saved_analysis_roundtrip_retains_occurrences_and_annotations(encoder):
                           sense_classes=['river','finance'],settings={'corpus_order':['old','new']},source_texts={'original':'bank then bank'})
     restored=load_project(content)
     assert restored['data'].char_spans==data.char_spans
-    assert restored['annotations']=={1:'river'}
+    assert restored['annotations']=={1:{'river':None}}
     assert restored['source_texts']=={'original':'bank then bank'}
     assert restored['embedded'].metadata==embedded.metadata
     torch.testing.assert_close(restored['embedded'].embeddings,embedded.embeddings)
@@ -155,7 +155,7 @@ def test_saved_file_rename_delete_and_collision_safety(tmp_path):
     renamed=rename_project(original,'Bank study – edited.semlens')
     assert renamed.name=='Bank study – edited.semlens'
     assert not original.exists() and renamed.read_bytes()==content
-    assert load_project(renamed)['annotations']=={1:'river'}
+    assert load_project(renamed)['annotations']=={1:{'river':None}}
     delete_project(renamed)
     assert not renamed.exists()
     assert other.read_bytes()==b'Leave this file unchanged'

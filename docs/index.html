@@ -135,7 +135,7 @@
 <section id="start">
   <div class="wrap">
     <h2>Get started</h2>
-    <p class="intro">Three steps, typed into a terminal (Terminal on macOS and Linux, PowerShell on Windows). You need about 4&nbsp;GB of free disk space and an internet connection for the downloads.</p>
+    <p class="intro">Three steps, typed into a terminal (Terminal on macOS and Linux, PowerShell on Windows). You need about 6&nbsp;GB of free disk space and an internet connection for the downloads.</p>
 
     <ol class="setup">
       <li>
@@ -154,9 +154,9 @@
         <p>Every later time, the same command starts in a few seconds. Keep the terminal window open while you work; closing it stops SemLens.</p>
       </li>
       <li>
-        <h3>Try the built-in example <span class="time">first time: a 2&nbsp;GB download, then a minute or two</span></h3>
+        <h3>Try the built-in example <span class="time">first time: a 2.2&nbsp;GB download, then a minute or two</span></h3>
         <p>Under <strong>Data source</strong>, choose <strong>Example: “bubble” in the Guardian, 1999–2026</strong>, click <strong>Load the example</strong>, then <strong>Embed loaded usages</strong>.</p>
-        <p>The first time you embed anything, the language model itself is downloaded (about 2.2&nbsp;GB, once). After that, the 350 example sentences usually take a minute or two on a recent laptop. Then follow the walkthrough below with the real thing in front of you.</p>
+        <p>The first time you embed anything, the language model itself is downloaded: 2.2&nbsp;GB, once. Hugging Face also saves a converted copy of its weights, so it takes about 4.5&nbsp;GB of disk space in all. After that, the 350 example sentences usually take a minute or two on a recent laptop. Then follow the walkthrough below with the real thing in front of you.</p>
       </li>
     </ol>
 
@@ -172,7 +172,7 @@
       <summary>Updating, a different port, and installing from the repository</summary>
       <ul>
         <li>To get the newest version, add <code>--refresh</code> right after <code>uvx</code>.</li>
-        <li>Anything after <code>semlens</code> goes to the app server, for example <code>semlens --server.port 8502</code>.</li>
+        <li>Anything after <code>semlens</code> goes to the app server, for example <code>semlens --server.port 8502</code>, or <code>semlens --theme.base dark</code> for dark tables to match the dark theme.</li>
         <li>To install from a copy of the repository instead, see the <a href="https://github.com/roksanagow/SemLens#install-and-launch">README</a>.</li>
       </ul>
     </details>

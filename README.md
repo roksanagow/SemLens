@@ -63,7 +63,7 @@ This creates `.venv`, installs everything and launches the app. Without `--run` 
 
 </details>
 
-The first use of an encoder may download its model files from Hugging Face. The default is `pierluigic/xl-lexeme`. Other Hugging Face encoders or local model directories can be selected under advanced settings.
+The first use of an encoder downloads its model files from Hugging Face and keeps them for later runs. The default, `pierluigic/xl-lexeme` (about 560 million parameters), is a 2.2 GB download; because its repository holds only the older `.bin` weights, transformers also saves a converted copy, so it takes about 4.5 GB of disk space. Other encoders are chosen under **Advanced embedding settings** → **Language model**: any Hugging Face encoder by name or page link, or a model from GitHub or elsewhere once its files are downloaded into a folder (give the folder's path). Below the choice, SemLens estimates the download and disk space from the model's parameters (roughly 4 GB per billion parameters), looking typed-in models up on Hugging Face. Embedding needs about as much free memory as the model's size.
 
 ## A short workflow
 
@@ -74,10 +74,10 @@ The first screen opens with **New here? How SemLens works**, and the sidebar has
 3. Choose **Target word** or **Whole sentence**, then embed the usages. Model, layer and context-window controls are inside **Advanced embedding settings**.
 4. In **Explore**, inspect every corpus together. PCA is the default, with each axis labelled by its share of the variation; UMAP, t-SNE and LDA are optional. The **(?)** beside **Plot view** explains what each view shows.
 5. In **Definitions**, enter or import definitions and create a definition space. **Definition axes** starts with the first two definitions on the horizontal and vertical axes; use the axis selectors to choose other definitions or PC1/PC2.
-6. In **Annotation**, create sense classes; each becomes a button. The active sense has a coloured border. Point selection is on by default, with a standard arrow cursor: click an occurrence to assign it immediately. Lasso selection is also available. You can clear a selection and undo annotation changes. Turn on **Blind annotation** to annotate without seeing which corpus a usage comes from.
+6. In **Annotation**, create sense classes; each becomes a button. The active sense has a coloured border. Point selection is on by default, with a standard arrow cursor: click an occurrence to assign it immediately. Lasso selection is also available. You can clear a selection and undo annotation changes. Turn on **Blind annotation** to annotate without seeing which corpus a usage comes from. **Annotation options** (collapsed) lets a usage have several senses and lets each sense be rated.
 7. Expand **Save or export this analysis** to save locally or download a portable analysis file.
 
-The default theme is **Dark**; choose **Light** or **Dark** in the sidebar. Green buttons at the bottom right lead to the next workspace. Open expandable diagnostic sections to load their content directly. In the AMD pair tables, each sentence cell scrolls horizontally while the neighbouring column stays in place. Other sentence tables scroll horizontally across the grid. Annotation review initially shows only annotated occurrences; tick **Include unannotated occurrences** to include the rest.
+The default theme is **Light**; choose **Light** or **Dark** in the sidebar. Tables and list editors follow Streamlit's own theme, which is light; to make them dark as well, start SemLens with `--theme.base dark` (after `semlens` or `streamlit run app/app.py`). Green buttons at the bottom right lead to the next workspace. Open expandable diagnostic sections to load their content directly. In the AMD pair tables, each sentence cell scrolls horizontally while the neighbouring column stays in place. Other sentence tables scroll horizontally across the grid. Annotation review initially shows only annotated occurrences; tick **Include unannotated occurrences** to include the rest.
 
 Click a corpus name in a plot legend to hide or show its usages; double-click to show that corpus alone. The choice is remembered when you change the projection or the definition axes, move between Explore, Definitions and Annotation, or annotate. A hidden corpus stays in the legend, greyed out, and is left out of click and lasso selection.
 
@@ -91,14 +91,29 @@ Supported inputs:
 | --- | --- |
 | Paste sentences | One sentence per line, for 1–10 named corpora |
 | Raw corpora | Up to ten plain-text files; each file is a named corpus. UTF-8 is expected; UTF-16 and Windows-1252 files are read too, with a note |
-| Example | 350 Guardian sentences containing *bubble*, in seven periods |
-| CSV/TSV | `sentence`, `corpus`; optional `start`, `end`, `sentence_id`. Any other columns (date, title, URL, …) are kept and returned in the annotation export |
+| Example | 350 Guardian sentences containing *bubble*, in seven periods, with each article's publication date as its time |
+| CSV/TSV | `sentence`, `corpus`; optional `start`, `end`, `sentence_id`, and a time column (see [Time](#time)). Any other columns (date, title, URL, …) are kept and returned in the annotation export |
 | Pre-computed vectors | `.pt` or `.npy` with shape `[occurrences, dimensions]`, plus matching metadata rows |
 | Saved corpora | Persistent corpus embeddings with their source text and sentence index |
 | Saved word embeddings | Only the current word's usage vectors, matching sentences and extraction settings |
 | Saved analysis | A `.semlens` snapshot with usages, vectors, definitions and annotations |
 
 Matching finds every occurrence of the forms you list, as whole words. Forms are user-defined: you may intentionally include related lexemes such as *runner*, and a form ending in `*` matches any ending (`runn*` finds *running* and *runner*). The target word itself is entered in full, because it names the word in definitions. SemLens does not silently substitute a vaguely similar word. Case is ignored unless you tick **Match upper and lower case exactly** under **Usage selection options**, which separates *May* from *may*.
+
+### Time
+
+Usages can carry a point in time as well as a corpus.
+
+- **From a CSV/TSV:** after choosing the file, pick its **Time column**. A column called `date`, `year` or `time` is picked automatically. It may hold years (`1999`), other numbers, or ISO dates (`2020-05-10`, `2020-05`, `2020-05-10T02:14:27Z`); dates become decimal years, so 1 July 2020 is about 2020.5. Dates written as `10/05/2020` are not read, because day and month order is ambiguous. Rows without a readable time are kept, counted in a note, and left out of time views.
+- **Periods instead of a corpus column:** with a time column, the corpus column is optional. Without one (or by choosing **Periods formed from the time column**), usages are grouped into periods that act as the corpora for scores, heatmaps and frequencies: 2–10 periods of **Equal length** or with **About equal numbers of usages**. Dates are grouped by calendar year, so periods read *1999–2004*. Usages without a time form a last period, *No time*. Periods formed this way are marked chronological.
+- **From corpus names:** for raw text or pasted sentences, tick **Use corpus names as times** under **Usage selection options** when every corpus is named by a year (`1999`) or a range (`1999–2003`, which becomes its middle, 2001).
+
+With times loaded, every plot workspace gains two things:
+
+- **Over time** (under **Plot view**) puts time on the horizontal axis and PC1, PC2 or the distance to a chosen definition on the vertical one. **Plot options** holds a moving average (the mean position of about a tenth of the usages shown, centred on each) and a small sideways spread for usages that share a year. Both are on by default.
+- **Colour points by: Time** (in **Plot options** of the other views) shades usages from earliest (dark) to latest (light), with a colour bar. The legend then shows grey entries, which still hide and show each corpus.
+
+Hovers show each usage's date or year. Time views and time colours are unavailable in blind annotation, because they would reveal the period. Times are saved with an analysis and included in the plot and annotation CSVs; they are not part of a usage's identity, so adding a time column keeps existing annotations matched.
 
 CSV `start` and `end` are **zero-based character offsets**, with an exclusive end. They are authoritative, including when the target has an unexpected surface form. Invalid, empty or partially specified spans produce an error. Without positions, all exact occurrences are found; pre-computed vectors require explicit positions if a row contains several matching occurrences, to preserve alignment.
 
@@ -109,6 +124,19 @@ Pasted or uploaded texts stay available for the rest of the session: return to D
 The review panel and plot hover highlight the exact selected occurrence. Hover sentences wrap at approximately 75 characters and appear above or below their point, depending on available screen space. Unusually long sentences can be scrolled inside the hover box; no text is truncated. Repeated occurrences in one sentence remain separate observations; whole-sentence mode gives those occurrences the same context representation.
 
 For uploaded text, **How the text is divided into contexts** (under **Usage selection options**) offers three choices. *Automatically* ends a sentence at `.`, `!`, `?` and at a blank line, so a heading does not run into the paragraph below; titles such as *Mr.* and *Dr.*, *e.g.*, *i.e.* and numbered references such as *No. 10* do not end one. *One sentence per line* suits text that is already split. *One paragraph per context* keeps blocks separated by a blank line whole, for when a sentence is too little context. The automatic splitter remains a heuristic: other abbreviations, quotations and historical orthography may need correction, and a CSV gives exact boundaries. Source files are retained unchanged in saved corpus collections, alongside the extracted sentences.
+
+### Different words
+
+The target word and its other forms can also be **different words to compare**, such as *bubble* and *balloon*, or a singular and its plural.
+
+- **The question:** as soon as another form is typed (or, for the example and saved analyses, once they are loaded), Data & Model asks **Are these forms of one word, or different words to compare?** The default, **Forms of one word**, analyses every usage together. The answer can also be changed under **Display & comparison settings** in the sidebar, and is saved with an analysis.
+- **Which word each form belongs to:** with **Different words**, a table lists each form you typed with its word, and, once usages are loaded, how many each found. Each form starts as its own word; give two forms the same word to count them as one (capitals are ignored when names are compared). A wildcard such as `balloon*` is always one word. A usage belongs to the form it matched: spelled exactly the same, then ignoring capitals, then the longest wildcard. Usages from a table whose form matches no entry are grouped as *other forms*. Editing the table regroups at once, with no loading or embedding again, and annotations stay. Up to 10 words.
+- **Colour and compare by:** a switch at the top of Explore, Definitions and Annotation chooses **Corpus** or **Word**. Whichever is chosen does everything corpora do elsewhere: colours, legend, LDA, scores and heatmaps, the comparison of two groups, definition distributions and sense frequencies. The switch is global: changing it in one workspace changes all three.
+- **Showing some words or corpora:** beside the switch, **Words shown** (when comparing corpora) or **Corpora shown** (when comparing words) limits the usages drawn and compared. Show one word to see how it is used across the corpora; show one corpus to compare the words within it. Hovers name the other dimension (the word, or the corpus).
+- **Words by corpus** (Explore): how often each word occurs in each corpus, as counts and shares, with a stacked chart (shares, or totals) and, for raw text loaded without a maximum per corpus, per million words.
+- **Words over time** (Explore, for three or more chronological corpora): one chosen score at a time, for each word against the period before or the first period, and the distance between one word and each other word, period by period. Scores also depend on how many usages are compared, so a word with few usages per period scores higher from that alone: read each line against itself.
+- **Definitions** default to **Definition only** read as **Whole input** (a sentence-level embedding), since one set of definitions serves all the words. They can still be changed. Usages remain word-level vectors, so distances to definitions are larger overall than with word-level definitions; they stay comparable between usages and words.
+- **Annotation:** annotations always belong to the loaded usages, whatever is grouped or shown; the export adds a `word` column. In blind annotation, words keep their colours (each sentence shows its word anyway) while corpus names and time views stay hidden.
 
 ## Corpus order and sampling
 
@@ -196,13 +224,28 @@ A snapshot preserves the current analysis. Complete token caches remain separate
 
 ### Annotation aids
 
-**Annotate in a list** (below the plot) shows the usages as concordance lines with a sense to choose on each, for annotating by reading rather than by position in the plot. Lines can be searched, sorted by a neighbouring word and limited to usages without a sense. **Show only usages without a sense** does the same for the plot. Under **Manage classes and annotations**, a class can be renamed (renaming onto an existing class merges them), and annotations can be imported from a CSV exported earlier or prepared by a colleague on the same data.
+**Annotate in a list** (below the plot) shows the usages as concordance lines with a sense to choose on each, for annotating by reading rather than by position in the plot. Lines can be searched, sorted by a neighbouring word and limited to usages without a sense. **Show only usages without a sense** does the same for the plot. Under **Manage classes and annotations**, a class can be renamed (renaming onto an existing class merges them) or removed.
+
+**Load previous annotations** (top of the Annotation workspace) brings back earlier work without going to Data & Model. With usages loaded, it puts the annotations of a saved analysis (from this computer or a `.semlens` file) or of an annotation CSV onto them: a CSV exported earlier, edited in a spreadsheet, or prepared by a colleague on the same data. Usages are matched by usage ID; failing that, by sentence and target position (so annotations survive a change of corpus names or periods); failing that, by the sentence alone when it holds the word once. Anything ambiguous is skipped and counted. Loaded annotations are added to the ones made so far, a usage annotated in both keeping the loaded ones, unless **Replace the annotations made so far** is ticked; classes from the file are added, options the file needs (several senses, ratings) are switched on, and Undo restores the previous state. With nothing loaded yet, the same box opens a saved analysis whole, with its usages, vectors, definitions and annotations.
 
 **Highlight usages containing** (Annotation workspace) rings every usage whose sentence contains the text you type, for example `AI, dot-com, specul*`. It matches whole words or phrases and ignores case; commas separate alternatives and a trailing `*` matches any ending. A ringed point can be clicked or lassoed like any other.
 
-**Sense frequencies by corpus** appears below the plot once usages are annotated: a table of each sense in each corpus, as percentages of that corpus's annotated usages or as counts, a stacked chart in corpus order, and a CSV download. It reports how many usages are annotated in each corpus, because frequencies from a partly annotated corpus describe only what has been annotated. It is hidden while blind annotation is on.
+**Sense frequencies by corpus** appears below the plot once usages are annotated: a table of each sense in each corpus, as percentages of that corpus's annotated usages or as counts, a stacked chart in corpus order (shares, or totals with **Show totals instead of shares in the chart**), and a CSV download. It reports how many usages are annotated in each corpus, because frequencies from a partly annotated corpus describe only what has been annotated. It is hidden while blind annotation is on.
 
-Annotation CSV export can include unannotated occurrences. Extra columns from an uploaded usage table are included in the export and saved with an analysis; they are not shown in hovers. Changing representation or definitions preserves existing annotations on the same occurrences. Changing the target data only retains annotations whose occurrence identity still matches.
+### Several senses and graded annotation
+
+Two options in the collapsed **Annotation options** box change what an annotation holds. Both are off by default, so annotation starts as one sense per usage.
+
+- **Allow several senses per usage:** clicking a usage adds the active sense, or takes it off again if the usage already has it; a lasso adds the active sense to every usage inside. Each sense is drawn as its own outline, nested around the point in the order the senses were given. **Remove the active sense from selected** and **Remove all senses from selected** replace **Clear selected**. Switching the option off while some usages have several senses asks first, and offers to keep only the first sense of each (undo brings the others back).
+- **Graded annotation:** each sense a usage has also gets a rating, from 1 (the usage barely has this sense) to the top of the scale (it clearly does). **Points on the scale** sets the top, from 2 to 10; the default is 4. Under **Giving ratings**, the default is **Type a rating after each click or lasso**: a small box opens with the cursor already in it, so a rating is a click, a digit and Enter. Clicking a usage that already has the sense shows its rating, and the box can also remove the sense. Escape or Cancel assigns nothing. The other choice, **Use a default rating**, shows **Default rating** buttons above the plot instead, and every click or lasso gives that rating, which is quicker for long runs of similar usages. Weaker ratings draw thinner, paler outlines. Switching grading off hides the ratings without deleting them, and the scale cannot be made smaller than a rating already in use.
+
+The hover in the Annotation workspace lists each usage's senses (and ratings). In **Annotate in a list**, one sense per usage is chosen in the Sense column (with a Rating column when graded); with several senses, each sense has its own column: a tick box, or, when graded, a rating, `—` for not that sense and `✓` for a sense given before grading was switched on.
+
+In **Sense frequencies by corpus**, a usage with several senses counts once under each, so a corpus's senses can add up to more than 100% (and a stacked bar can reach above it); a row counts the usages with several senses. The chart is always stacked; **Show totals instead of shares in the chart** switches it from shares of each corpus's annotated usages (every bar the same height) to numbers of usages, so a corpus with more annotated usages has a taller bar. With grading, **Count a sense from rating** counts only ratings at or above a threshold, and a **Mean rating by corpus** table (with its own CSV) gives the mean rating of each sense in each corpus.
+
+The annotation CSV keeps a `sense` column, with several senses joined by `; `. Graded annotation of one sense per usage adds a `rating` column; with several senses or grading, each sense also has a `sense:<name>` column holding its rating, or 1/0 when ungraded. **Load previous annotations** reads all of these, and a file that needs several senses or ratings switches those options on, with a note. Saved analyses keep the ratings and the options; analyses saved before these options existed open unchanged.
+
+Annotation CSV export can include unannotated occurrences. Extra columns from an uploaded usage table are included in the export and saved with an analysis; apart from the time column, they are not shown in hovers. Changing representation or definitions preserves existing annotations on the same occurrences. Changing the target data only retains annotations whose occurrence identity still matches.
 
 ## Definition space and interpretation
 
@@ -264,7 +307,7 @@ python -m pytest -q
 
 `semlens` (or `python -m app.launch`) starts the app from any folder once the package is installed.
 
-Tests cover explicit offsets, word forms, one/many corpora, scalar distances, balanced sampling, LDA, shared plots, target markers, dictionary parsing, legend visibility, blind annotation, sense frequencies, annotation invalidation, cache reuse and saved-analysis round trips. Optional integration tests use a small locally cached real encoder without network downloads. When present, the user-supplied files in `testing_texts/` exercise corpus extraction and selected-excerpt embedding/cache equivalence.
+Tests cover explicit offsets, word forms, one/many corpora, scalar distances, balanced sampling, LDA, shared plots, target markers, dictionary parsing, legend visibility, blind annotation, several and graded senses (storage, toggling, list edits, frequencies, export and import), time parsing and periods, the Over time view and time colouring, sense frequencies, annotation invalidation, cache reuse and saved-analysis round trips. Optional integration tests use a small locally cached real encoder without network downloads. When present, the user-supplied files in `testing_texts/` exercise corpus extraction and selected-excerpt embedding/cache equivalence.
 
 The core library is in `semlens/`; Streamlit workspaces are separated into `app/ui_data.py`, `app/ui_explore.py`, `app/ui_definitions.py` and `app/ui_annotations.py`.
 

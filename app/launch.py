@@ -15,7 +15,7 @@ def main() -> None:
         credentials.write_text('[general]\nemail = ""\n', encoding="utf-8")
     print(f"SemLens keeps saved corpora and analyses in {STORAGE}", flush=True)
     command = [sys.executable, "-m", "streamlit", "run", str(Path(__file__).with_name("app.py")),
-               "--browser.gatherUsageStats", "false", "--theme.base", "dark", *sys.argv[1:]]
+               "--browser.gatherUsageStats", "false", "--theme.base", "light", *sys.argv[1:]]
     try:
         raise SystemExit(subprocess.call(command))
     except KeyboardInterrupt:
