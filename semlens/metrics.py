@@ -56,21 +56,31 @@ def calculate_amd(embs_1: Tensor, embs_2: Tensor, distance: str = "cosine") -> f
     return ((d.min(1).values.mean() + d.min(0).values.mean()) / 2).item()
 
 
-def _samd_from_distances(dist: Tensor) -> float:
-    """Greedy global-minimum matching, with deterministic row-major tie breaks."""
+def _samd_from_distances(dist: Tensor, chunk: int = 4096) -> float:
+    """Greedy global-minimum matching, with deterministic row-major tie breaks.
+
+    Pairs are taken in order of distance. They are read a chunk at a time, and
+    pairs whose usages were already matched before the chunk are dropped all
+    at once, so only the remaining few are checked one by one; the result is
+    the same as checking every pair in turn.
+    """
     values = dist.detach().cpu().numpy()
     n1, n2 = values.shape
     used1, used2 = np.zeros(n1, dtype=bool), np.zeros(n2, dtype=bool)
+    target = min(n1, n2)
     matched = []
     # Sorting once avoids cloning/scanning the full matrix for every match.
-    for flat in np.argsort(values, axis=None, kind="stable"):
-        i, j = divmod(int(flat), n2)
-        if used1[i] or used2[j]:
-            continue
-        matched.append(float(values[i, j]))
-        used1[i] = used2[j] = True
-        if len(matched) == min(n1, n2):
-            break
+    rows, cols = np.divmod(np.argsort(values, axis=None, kind="stable"), n2)
+    for start in range(0, rows.size, chunk):
+        r, c = rows[start:start + chunk], cols[start:start + chunk]
+        open_ = ~used1[r] & ~used2[c]
+        for i, j in zip(r[open_].tolist(), c[open_].tolist()):
+            if used1[i] or used2[j]:
+                continue
+            matched.append(float(values[i, j]))
+            used1[i] = used2[j] = True
+            if len(matched) == target:
+                return float(np.mean(matched))
     return float(np.mean(matched))
 
 

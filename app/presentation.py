@@ -13,6 +13,9 @@ def apply_theme():
     help_hover_ink,help_hover_edge,help_hover_top,help_hover_bottom=('#edfff7','#79b79f','#355b4e','#233d40') if dark else ('#174b37','#7da78f','#f7fff9','#dceee3')
     help_popup_top,help_popup_bottom=('#25332f','#18232a') if dark else ('#ffffff','#f0f7f3')
     help_shadow='#0005' if dark else '#17203320'
+    # Page tabs: the open tab a shade darker than the bar; hover in between.
+    tab_open,tab_hover=('#11161f','#161c28') if dark else ('#e2e8f0','#e9eef4')
+    placeholder='#6b7280' if dark else '#9ca3af'
     st.html(f'''<style>
     :root {{ --sl-bg:{bg}; --sl-surface:{surface}; --sl-text:{text}; --sl-border:{border}; }}
     .stApp, [data-testid="stHeader"], [data-testid="stBottom"] {{ background:{bg}; color:{text}; color-scheme:{'dark' if dark else 'light'}; }}
@@ -23,6 +26,8 @@ def apply_theme():
     .stApp [data-baseweb="select"] > div, .stApp [data-testid="stFileUploaderDropzone"],
     [data-baseweb="popover"], [role="listbox"], [role="option"] {{ background:{surface}; color:{text}; }}
     .stApp :is(input,textarea) {{ -webkit-text-fill-color:{text}; caret-color:{text}; }}
+    /* Example text in an empty box is grey, so it does not look typed in. */
+    .stApp :is(input,textarea)::placeholder {{ color:{placeholder}; -webkit-text-fill-color:{placeholder}; opacity:1; }}
     .stApp [data-baseweb="select"] input {{ background:transparent; }}
     .stApp button[kind="secondary"], .stApp button[kind="secondaryFormSubmit"],
     .stApp button[kind="segmented_control"], .stApp button[kind="pills"] {{ background:{surface}; color:{text}; border-color:{border}; }}
@@ -75,6 +80,20 @@ def apply_theme():
     .stApp code, .stApp [data-testid="stCode"] {{ background:{surface}; color:{text}; }}
     .stApp [data-testid="stCaptionContainer"] p {{ opacity:.8; }}
     .stApp mark {{ background:#fde68a; color:#172033; }}
+    /* Page tabs: one continuous bar across the top of the page, divided into tabs;
+       the open tab is a shade darker. */
+    .st-key-workspace_tabs, .st-key-dv_step_tabs {{ margin-bottom:6px; }}
+    :is(.st-key-workspace_tabs,.st-key-dv_step_tabs) [data-baseweb="button-group"] {{
+        gap:0 !important; border:1px solid {border}; background:{surface}; }}
+    :is(.st-key-workspace_tabs,.st-key-dv_step_tabs) button {{
+        border-radius:0 !important; border:none !important; border-left:1px solid {border} !important; margin:0 !important;
+        background:{surface} !important; color:{text} !important; box-shadow:none !important; }}
+    :is(.st-key-workspace_tabs,.st-key-dv_step_tabs) button:first-child {{ border-left:none !important; }}
+    :is(.st-key-workspace_tabs,.st-key-dv_step_tabs) button:hover {{ background:{tab_hover} !important; }}
+    :is(.st-key-workspace_tabs,.st-key-dv_step_tabs) button[kind="segmented_controlActive"] {{ background:{tab_open} !important; }}
+    :is(.st-key-workspace_tabs,.st-key-dv_step_tabs) button p {{ color:{text} !important; }}
+    :is(.st-key-workspace_tabs,.st-key-dv_step_tabs) button[kind="segmented_controlActive"] p {{ font-weight:600; }}
+    :is(.st-key-workspace_tabs,.st-key-dv_step_tabs) button:focus-visible {{ outline:2px solid {text}; outline-offset:-3px; }}
     .st-key-page_continue button {{ background:#15803d !important; color:white !important; border-color:#15803d !important; }}
     .st-key-page_continue button:hover {{ background:#166534 !important; }}
     .st-key-page_continue button p, .st-key-page_continue [data-testid="stIconMaterial"] {{ color:white !important; }}
@@ -122,6 +141,30 @@ def apply_theme():
     # travels in Plotly data and is escaped/wrapped before display.
     script=(Path(__file__).parent/'components'/'usage_hover.js').read_text()
     st.html(f'<script>{script}</script>',unsafe_allow_javascript=True)
+
+
+def page_tabs(label, options, key, format_func=str):
+    """The row of rectangular tabs on the first line of a page; returns the open one.
+
+    Only the open page is drawn (unlike ``st.tabs``, which draws every tab), so
+    this is a segmented control. Clicking the open tab again keeps it open.
+    """
+    last = f'_{key}_open'
+    if st.session_state.get(key) not in options:
+        remembered = st.session_state.get(last)
+        st.session_state[key] = remembered if remembered in options else options[0]
+
+    def keep_open():
+        if st.session_state.get(key) is None:
+            st.session_state[key] = st.session_state.get(last, options[0])
+
+    with st.container(key=f'{key}_tabs'):
+        choice = st.segmented_control(label, options, key=key, format_func=format_func, label_visibility='collapsed',
+                                      on_change=keep_open, width='stretch')
+    if choice not in options:
+        choice = st.session_state.get(last, options[0])
+    st.session_state[last] = choice
+    return choice
 
 
 def plot_chart(fig, **kwargs):

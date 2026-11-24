@@ -14,16 +14,44 @@ from app.ui_data import render_data,render_save_analysis
 from app.ui_explore import render_full_space
 from app.ui_definitions import render_definitions
 from app.ui_annotations import render_annotations
-from app.presentation import apply_theme
+from app.presentation import apply_theme,page_tabs
 from app.components.corpus_visibility import sync_corpus_visibility
+from app.preferences import apply_preferences,render_preferences_note,save_preferences
+
+SECTIONS=['Analyse a word','Discover related words']
 
 st.set_page_config(page_title='SemLens',page_icon='🔍',layout='wide')
+# Remembered settings first, so that they, not the defaults, start the session.
+apply_preferences()
 init_state()
+st.session_state.setdefault('section',SECTIONS[0])
+# The workspace is drawn only in Analyse a word: re-saved every run, so that a
+# visit to Discover does not reset it (Streamlit forgets the value of a widget that is not drawn).
+if 'workspace' in st.session_state:
+    st.session_state.workspace=st.session_state.workspace
+from app.discover import keep_settings as keep_discover_settings
+keep_discover_settings()
+save_preferences()
 with st.sidebar:
     st.title('🔍 SemLens')
     st.caption('Explore meaning across corpora')
+    section=st.radio('Section',SECTIONS,key='section',
+                     help='**Analyse a word**: how one word, or a few, are used in each corpus.\n\n'
+                          '**Discover related words**: find the words used like a set of seed words or seed usages, in each corpus, '
+                          'then open the ones you choose in Analyse a word.')
     st.radio('Theme',['Light','Dark'],horizontal=True,key='theme_mode')
     apply_theme()
+
+if section=='Discover related words':
+    from app.discover import render_discover,render_discover_sidebar
+    with st.sidebar:
+        render_discover_sidebar()
+        render_preferences_note()
+    render_discover()
+    save_preferences()
+    st.stop()
+
+with st.sidebar:
     data=st.session_state.target_word_data
     if data is not None:
         st.write(f'**{data.word}** · {len(data):,} occurrences')
@@ -77,12 +105,13 @@ with st.sidebar:
     st.caption('All corpora share the plots. Score comparisons have their own corpus selectors.')
     with st.expander('Glossary'):
         st.markdown(GLOSSARY)
+    render_preferences_note()
     # Before any plot is drawn: apply a corpus switched on or off in a plot legend.
     sync_corpus_visibility()
 
 # Render one workspace at a time: annotation actions do not recompute hidden plots.
 pages=['Data & Model','Explore','Definitions','Annotation']
-page=st.radio('Workspace',pages,horizontal=True,label_visibility='collapsed',key='workspace')
+page=page_tabs('Workspace',pages,'workspace')
 if page=='Data & Model':
     render_data()
 elif page=='Explore':
@@ -101,3 +130,5 @@ destination=pages[(pages.index(page)+1)%len(pages)]
 label=f'Continue to {destination}' if page!=pages[-1] else 'Return to Data & Model'
 with st.container(horizontal=True,horizontal_alignment='right',key='page_continue'):
     st.button(label,icon=':material/arrow_forward:',on_click=go_to_page,args=(destination,))
+
+save_preferences()

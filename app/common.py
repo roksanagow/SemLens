@@ -46,24 +46,27 @@ PROJECTION_HELP=(
 
 
 GLOSSARY=(
-    '**Usage** · one occurrence of the target word, read in its sentence.\n\n'
-    '**Corpus** · one collection of text to compare with the others: a period, a genre, a variety.\n\n'
-    '**Embedding** · the list of numbers a language model assigns to a usage. Usages the model treats as similar in meaning get similar numbers. '
-    'It is the model’s judgement, not a dictionary’s.\n\n'
-    '**Target word / whole sentence** · whether a usage is represented by the model’s numbers for the word itself in its context, or by the average over the whole sentence, '
+    '**Usage** · one occurrence of a word together with its context: the sentence, line or paragraph it appears in.\n\n'
+    '**Corpus** · a collection of texts to compare with others, such as a period, a genre or a variety.\n\n'
+    '**Embedding** · the list of numbers a language model gives a usage. Usages the model treats as similar in meaning get similar embeddings: '
+    'the model’s judgement, not a dictionary’s.\n\n'
+    '**Target word / whole sentence** · a usage represented by the embedding of the word itself, or by the average over the whole sentence, '
     'which also reflects the topic.\n\n'
-    '**Distance** · how different two usages are for the model: 0 for identical, larger for less alike. Cosine distance compares direction and is the usual choice.\n\n'
-    '**Projection** · a two-dimensional picture of the embeddings (PCA, UMAP, t-SNE, LDA). Every picture loses information; scores never use it.\n\n'
-    '**Definition space** · each usage described by its distance to each definition you supply. A way to ask which of your candidate senses a usage is nearest.\n\n'
+    '**Distance** · how different two embeddings are: 0 for the same, larger for less alike. Cosine distance is the usual choice.\n\n'
+    '**Projection** · a two-dimensional picture of the embeddings (PCA, UMAP, t-SNE, LDA). Every picture loses information; '
+    'scores are always computed from the embeddings themselves.\n\n'
+    '**Definition space** · each usage described by its distance to each definition you write: which of your senses is it nearest?\n\n'
     '**Change scores (APD, PRT, AMD, SAMD)** · single numbers for how far apart the usages of two corpora are. The (?) beside each gives its formula.\n\n'
-    '**Nearest counterpart** · for a usage in one corpus, the most similar usage in another. A usage with no close counterpart is a candidate new or lost use.\n\n'
-    '**Sense class** · a label you define and assign to usages when annotating.\n\n'
-    '**Graded annotation** · an option in Annotation: each sense a usage has also gets a rating, from 1 (barely) to the top of the scale (clearly). '
-    'A second option lets one usage have several senses.\n\n'
-    '**Different words** · with more than one form, Data & Model asks whether they are forms of one word or different words to compare. '
-    'Different words get their own colours, and a switch at the top of each workspace compares either corpora or words.\n\n'
-    '**Time** · a year, date or other number for each usage, from a column of a CSV table or from corpus names such as 1999–2003. '
-    'It adds the **Over time** view (time across, a position up) and colouring points by time; periods formed from it act as corpora.')
+    '**Nearest counterpart** · for a usage in one corpus, the most similar usage in another. A usage with no close counterpart may be a new or lost sense.\n\n'
+    '**Sense class** · a sense label you create and give to usages when annotating.\n\n'
+    '**Graded annotation** · an Annotation option: each sense of a usage also gets a rating, from 1 (barely) to the top of the scale (clearly). '
+    'Another option lets one usage have several senses.\n\n'
+    '**Different words** · with several forms, Data & Model asks whether they are forms of one word or different words to compare. '
+    'Different words get their own colours, and a switch at the top of each workspace compares corpora or words.\n\n'
+    '**Time** · a year, date or other number for each usage, from a table column or from corpus names such as 1999–2003. '
+    'It adds the **Over time** view and colouring by time.\n\n'
+    '**Discover related words** · the other section (in the sidebar): ranks the words of your corpora by how close their usages are '
+    'to seed words or seed usages.')
 
 
 def natural_sort_key(text):
@@ -79,7 +82,11 @@ def get_model(model_id, revision=None):
     try:
         model=load_model(model_id,revision=revision,local_files_only=True)
     except OSError:
+        # A first use downloads the model: never when it would fill the disk.
+        from app.costs import check_download,model_profile
+        check_download(model_id)
         model=load_model(model_id,revision=revision)
+        model_profile.clear()
     st.session_state['_loaded_model']=model
     return model
 

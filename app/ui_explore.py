@@ -15,6 +15,8 @@ from semlens.utils import find_usages
 from app.components.scatter import render_scatter,render_lda_weights_chart
 from app.components.corpus_visibility import hidden_corpora
 from app.grouping import current_view,loaded_words,render_grouping_controls,words_active
+from app.costs import cost_check
+from semlens.resources import comparison_cost
 from app.presentation import plot_chart,readable_table,sentence_pair_table,nearest_usage_html
 from app.common import (cached_projection,cached_comparison,cached_corpus_scores,ordered_labels,number,show_usage,
                         corpus_colours,METRIC_HELP,METRIC_NAMES,DIRECTIONAL_AMD_FORMULA,PROJECTION_HELP)
@@ -104,6 +106,9 @@ def _projection_settings(method,key,count,dimensions,distance):
                  'by less than half the gap between times, so they can be told apart.')
     if method in {'UMAP','t-SNE'}:
         st.caption(f'Neighbours are found by {distance} distance, the vector distance chosen in the sidebar.')
+        if count>20000:
+            st.warning(f'{method} on {count:,} usages can take many minutes, and the app waits until it finishes. '
+                       'PCA is immediate; a maximum number of occurrences per corpus in Data & Model also makes this faster.')
     return settings
 
 
@@ -361,6 +366,9 @@ def render_comparison(data,embeddings,*,key,definition_labels=None,noun=('corpus
     a=cols[0].selectbox(f'From {noun[0]}',labels,key=f'{key}_from')
     b=cols[1].selectbox(f'To {noun[0]}',[c for c in labels if c!=a],key=f'{key}_to')
     ia,ib=data.indices_for_corpus(a),data.indices_for_corpus(b)
+    # Checked at the sizes the sidebar's sampling compares (the pair inspector reads the same samples).
+    if not comparison_allowed([(len(ia),len(ib))],f'{key}_pair',f'Comparing {a} and {b}'):
+        return
     xa,xb=embeddings[ia],embeddings[ib]
     distance='absolute' if definition_labels and len(definition_labels)==1 else st.session_state.distance_metric
     with st.spinner('Comparing usages…'):
@@ -578,6 +586,23 @@ def corpus_score_heatmap(stats,counts,labels,metric):
     return fig
 
 
+def _pair_sizes(na,nb):
+    """The sizes compared for two groups under the sidebar's sampling."""
+    if st.session_state.sampling_mode=='unequal':
+        return na,nb
+    smaller=min(na,nb)
+    return smaller,smaller
+
+
+def comparison_allowed(sizes,key,action):
+    """Hold back comparisons whose distance matrices could exhaust memory."""
+    cost=comparison_cost([_pair_sizes(a,b) for a,b in sizes],action)
+    if cost.memory_bytes<5e8:
+        return True
+    return cost_check(cost,key,remedy='Set a maximum number of occurrences per corpus in Data & Model, '
+                                       'or choose Equal sizes under Score sampling in the sidebar.')
+
+
 def render_corpus_scores(data,embeddings,noun=('corpus','corpora')):
     labels=ordered_labels(data)
     if len(labels)<2:
@@ -597,6 +622,9 @@ def render_corpus_scores(data,embeddings,noun=('corpus','corpora')):
         st.info('Switch on at least two corpora in the plot legend to compare them.')
         return
     indices=tuple(tuple(data.indices_for_corpus(label)) for label in labels)
+    if not comparison_allowed([(len(indices[i]),len(indices[j])) for a,i in enumerate(shown) for j in shown[a+1:]],
+                              'all_pairs',f'Comparing every pair of {noun[1]}'):
+        return
     with st.spinner('Comparing all corpus pairs…'):
         matrices,counts=cached_corpus_scores(embeddings.detach().cpu().numpy(),indices,tuple(labels),distance,mode,
                                              st.session_state.sampling_repetitions,st.session_state.sampling_seed)
@@ -782,6 +810,12 @@ def render_word_change(data,words,word_order,embeddings):
                            format_func={'previous':'the period before','first':f'the first period ({order[0]})'}.get)
     reference=cols[1].selectbox('Distance between words: from',word_order,key='word_change_reference',
                                 help='Each other word is compared with this one, within each period.')
+    groups={}
+    for word,usage in zip(words,data.usages):
+        groups[(word,usage.corpus)]=groups.get((word,usage.corpus),0)+1
+    sizes=[(groups.get((w,a),0),groups.get((w,b),0)) for w in word_order for a in order for b in order if a<b]
+    if not comparison_allowed(sizes,'word_change','Comparing the words in each period'):
+        return
     with st.spinner('Comparing the words in each period…'):
         each,between=word_change_series(embeddings.detach().cpu().numpy(),data,words,word_order,order,metric,baseline,reference)
     colours=corpus_colours(list(word_order),st.session_state.palette_name)

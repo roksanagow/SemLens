@@ -6,3 +6,7 @@ headless = true
 
 [theme]
 base = "light"
+
+[client]
+# No "Deploy" button or developer menu: SemLens runs on the user's own computer.
+toolbarMode = "viewer"

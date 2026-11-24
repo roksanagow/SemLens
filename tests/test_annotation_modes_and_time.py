@@ -272,7 +272,7 @@ def widget(at, kind, label):
 
 def test_over_time_view_puts_time_on_the_x_axis_with_a_moving_average():
     at, data = timed_app()
-    widget(at, 'radio', 'Workspace').set_value('Explore').run()
+    widget(at, 'button_group', 'Workspace').set_value('Explore').run()
     view = widget(at, 'selectbox', 'Plot view')
     assert 'Over time' in view.options
     view.set_value('Over time').run()
@@ -294,7 +294,7 @@ def test_over_time_view_puts_time_on_the_x_axis_with_a_moving_average():
 
 def test_points_can_be_coloured_by_time_and_time_views_are_hidden_while_blind():
     at, data = timed_app()
-    widget(at, 'radio', 'Workspace').set_value('Explore').run()
+    widget(at, 'button_group', 'Workspace').set_value('Explore').run()
     widget(at, 'radio', 'Colour points by').set_value('Time').run()
     fig = chart(at)
     assert fig['layout']['coloraxis']['colorscale'] and fig['layout']['coloraxis']['cmin'] == 1990
@@ -304,7 +304,7 @@ def test_points_can_be_coloured_by_time_and_time_views_are_hidden_while_blind():
     entries = [t for t in fig['data'] if (t.get('meta') or {}).get('semlens_legend_entry')]
     assert [t['name'] for t in entries] == data.corpus_labels
     assert all(t['legendgroup'] == t['name'] for t in entries + corpus_traces)
-    widget(at, 'radio', 'Workspace').set_value('Annotation').run()
+    widget(at, 'button_group', 'Workspace').set_value('Annotation').run()
     widget(at, 'toggle', 'Blind annotation').set_value(True).run()
     assert 'Over time' not in widget(at, 'selectbox', 'Plot view').options
     assert not any(r.label == 'Colour points by' for r in at.radio)
@@ -314,7 +314,7 @@ def test_points_can_be_coloured_by_time_and_time_views_are_hidden_while_blind():
 
 def test_annotation_options_are_off_and_tucked_away_until_switched_on():
     at, data = timed_app()
-    widget(at, 'radio', 'Workspace').set_value('Annotation').run()
+    widget(at, 'button_group', 'Workspace').set_value('Annotation').run()
     widget(at, 'text_input', 'New sense class').set_value('finance')
     widget(at, 'button', 'Add class').click().run()
     assert any(e.label == 'Annotation options' for e in at.expander)
@@ -328,8 +328,8 @@ def test_annotation_options_are_off_and_tucked_away_until_switched_on():
     widget(at, 'number_input', 'Points on the scale').set_value(6).run()
     assert at.session_state['_annotation_store']['options']['scale'] == 6
     # The options survive a visit to another workspace.
-    widget(at, 'radio', 'Workspace').set_value('Explore').run()
-    widget(at, 'radio', 'Workspace').set_value('Annotation').run()
+    widget(at, 'button_group', 'Workspace').set_value('Explore').run()
+    widget(at, 'button_group', 'Workspace').set_value('Annotation').run()
     assert widget(at, 'checkbox', 'Graded annotation').value is True
     assert widget(at, 'number_input', 'Points on the scale').value == 6
 
@@ -339,7 +339,7 @@ def test_switching_off_several_senses_asks_before_dropping_any():
     at.session_state['_annotation_store'] = {'annotations': {0: {'finance': None, 'social': None}}, 'sense_classes': ['finance', 'social'],
                                              'active_sense_class': 'finance', 'history': [],
                                              'options': {'multiple': True, 'graded': False, 'scale': 4}}
-    widget(at, 'radio', 'Workspace').set_value('Annotation').run()
+    widget(at, 'button_group', 'Workspace').set_value('Annotation').run()
     widget(at, 'checkbox', 'Allow several senses per usage').uncheck().run()
     assert not at.exception
     assert at.session_state['_annotation_store']['options']['multiple'] is True
@@ -388,7 +388,7 @@ def test_list_shows_a_column_per_sense_when_several_senses_are_allowed():
     at.session_state['_annotation_store'] = {'annotations': {0: {'finance': 3, 'social': None}, 2: {'social': 1}},
                                              'sense_classes': ['finance', 'social'], 'active_sense_class': 'finance', 'history': [],
                                              'options': {'multiple': True, 'graded': True, 'scale': 4}}
-    widget(at, 'radio', 'Workspace').set_value('Annotation').run()
+    widget(at, 'button_group', 'Workspace').set_value('Annotation').run()
     at.session_state['annotation_list'] = True
     at.run()
     assert not at.exception
@@ -416,7 +416,7 @@ def test_rating_box_saves_a_typed_rating_or_removes_the_sense():
     at.session_state['_annotation_store'] = {'annotations': {2: {'finance': 1, 'social': None}}, 'sense_classes': ['finance', 'social'],
                                              'active_sense_class': 'finance', 'history': [],
                                              'options': {'multiple': True, 'graded': True, 'scale': 4, 'rating_entry': 'ask'}}
-    widget(at, 'radio', 'Workspace').set_value('Annotation').run()
+    widget(at, 'button_group', 'Workspace').set_value('Annotation').run()
     assert not any(w.label == 'Default rating' for w in at.get('button_group'))
     at.session_state['_rating_request'] = {'indices': [0, 1], 'sense': 'finance'}
     at.run()
@@ -439,7 +439,7 @@ def test_rating_box_saves_a_typed_rating_or_removes_the_sense():
     at.session_state['_annotation_store'] = {'annotations': {2: {'finance': 1, 'social': None}}, 'sense_classes': ['finance', 'social'],
                                              'active_sense_class': 'finance', 'history': [],
                                              'options': {'multiple': True, 'graded': True, 'scale': 4, 'rating_entry': 'ask'}}
-    widget(at, 'radio', 'Workspace').set_value('Annotation').run()
+    widget(at, 'button_group', 'Workspace').set_value('Annotation').run()
     at.session_state['_rating_request'] = {'indices': [2], 'sense': 'finance'}
     at.run()
     assert any('already has “finance”, rated 1' in c.value for c in at.caption)
@@ -451,7 +451,7 @@ def test_default_rating_mode_shows_the_rating_buttons():
     at, data = timed_app()
     at.session_state['_annotation_store'] = {'annotations': {}, 'sense_classes': ['finance'], 'active_sense_class': 'finance', 'history': [],
                                              'options': {'multiple': False, 'graded': True, 'scale': 4, 'rating_entry': 'default'}}
-    widget(at, 'radio', 'Workspace').set_value('Annotation').run()
+    widget(at, 'button_group', 'Workspace').set_value('Annotation').run()
     assert not at.exception
     assert any(w.label == 'Default rating' for w in at.get('button_group'))
     assert widget(at, 'radio', 'Giving ratings').value == 'default'
@@ -462,7 +462,7 @@ def test_frequency_chart_stacks_shares_or_totals():
     at.session_state['_annotation_store'] = {'annotations': {0: {'finance': None, 'social': None}, 1: {'finance': None}, 6: {'social': None}},
                                              'sense_classes': ['finance', 'social'], 'active_sense_class': 'finance', 'history': [],
                                              'options': {'multiple': True, 'graded': False, 'scale': 4, 'rating_entry': 'ask'}}
-    widget(at, 'radio', 'Workspace').set_value('Annotation').run()
+    widget(at, 'button_group', 'Workspace').set_value('Annotation').run()
     bars = next(json.loads(c.proto.spec) for c in at.get('plotly_chart') if json.loads(c.proto.spec)['data'][0]['type'] == 'bar')
     assert bars['layout']['barmode'] == 'stack'
     assert [t['y'] for t in bars['data']] == [[1.0, 0.0], [0.5, 1.0]]
@@ -539,13 +539,13 @@ def test_annotation_tab_opens_a_saved_analysis_when_nothing_is_loaded(monkeypatc
     monkeypatch.setattr(ui, 'STORAGE', tmp_path)
     saved_analysis(tmp_path, {0: 'finance', 7: 'social'})
     at = AppTest.from_file('app/app.py', default_timeout=30).run()
-    widget(at, 'radio', 'Workspace').set_value('Annotation').run()
+    widget(at, 'button_group', 'Workspace').set_value('Annotation').run()
     assert not at.exception
     assert any('Annotation needs usages' in i.value for i in at.info)
     assert 'earlier work' in widget(at, 'selectbox', 'Saved analysis').format_func(widget(at, 'selectbox', 'Saved analysis').value)
     widget(at, 'button', 'Open analysis').click().run()
     assert not at.exception
-    assert widget(at, 'radio', 'Workspace').value == 'Annotation'
+    assert widget(at, 'button_group', 'Workspace').value == 'Annotation'
     assert len(at.session_state['target_word_data']) == 12
     assert at.session_state['_annotation_store']['annotations'] == {0: {'finance': None}, 7: {'social': None}}
     assert any('Opened “earlier work”' in m.value for m in at.success)
@@ -558,7 +558,7 @@ def test_annotation_tab_loads_previous_annotations_onto_the_loaded_usages(monkey
     at, data = timed_app()
     at.session_state['_annotation_store'] = {'annotations': {3: {'finance': None}}, 'sense_classes': ['finance'],
                                              'active_sense_class': 'finance', 'history': []}
-    widget(at, 'radio', 'Workspace').set_value('Annotation').run()
+    widget(at, 'button_group', 'Workspace').set_value('Annotation').run()
     assert any(e.label == 'Load previous annotations' for e in at.expander)
     assert widget(at, 'checkbox', 'Replace the annotations made so far').value is False
     widget(at, 'button', 'Load annotations').click().run()
@@ -621,7 +621,7 @@ def groups_in(fig):
 
 def test_the_switch_is_global_and_groups_every_workspace_by_word():
     at, data = word_app()
-    widget(at, 'radio', 'Workspace').set_value('Explore').run()
+    widget(at, 'button_group', 'Workspace').set_value('Explore').run()
     assert not at.exception
     # A corpus pair chosen before switching must not linger among the words.
     widget(at, 'selectbox', 'From corpus').set_value('new').run()
@@ -636,7 +636,7 @@ def test_the_switch_is_global_and_groups_every_workspace_by_word():
     assert widget(at, 'selectbox', 'From word').value == 'bubble' and widget(at, 'selectbox', 'To word').value == 'balloon'
     assert any(s.value == 'Compare words' for s in at.subheader)
     # The same choice in another workspace.
-    widget(at, 'radio', 'Workspace').set_value('Annotation').run()
+    widget(at, 'button_group', 'Workspace').set_value('Annotation').run()
     assert not at.exception
     assert widget(at, 'radio', 'Colour and compare by').value == 'word'
     assert set(groups_in(chart(at))) == {'bubble', 'balloon'}
@@ -645,7 +645,7 @@ def test_the_switch_is_global_and_groups_every_workspace_by_word():
 
 def test_showing_one_word_compares_it_across_corpora_and_hover_names_the_word():
     at, data = word_app(words_shown=['balloon'])
-    widget(at, 'radio', 'Workspace').set_value('Explore').run()
+    widget(at, 'button_group', 'Workspace').set_value('Explore').run()
     assert not at.exception
     fig = chart(at)
     # Only balloon's usages, still grouped by corpus; usage IDs in the download are the originals.
@@ -658,7 +658,7 @@ def test_showing_one_word_compares_it_across_corpora_and_hover_names_the_word():
 def test_clicks_and_frequencies_in_a_filtered_view_use_the_loaded_usages(monkeypatch):
     import app.grouping as grouping
     at, data = word_app(group_by='word', corpora_shown=['new'], annotations={3: {'finance': None}, 0: {'literal': None}})
-    widget(at, 'radio', 'Workspace').set_value('Annotation').run()
+    widget(at, 'button_group', 'Workspace').set_value('Annotation').run()
     assert not at.exception
     fig = chart(at)
     # Only the new corpus is drawn, so view positions differ from the loaded ones.
@@ -681,7 +681,7 @@ def test_clicks_and_frequencies_in_a_filtered_view_use_the_loaded_usages(monkeyp
 
 def test_blind_annotation_keeps_word_colours_but_hides_corpora():
     at, data = word_app(group_by='word')
-    widget(at, 'radio', 'Workspace').set_value('Annotation').run()
+    widget(at, 'button_group', 'Workspace').set_value('Annotation').run()
     widget(at, 'toggle', 'Blind annotation').set_value(True).run()
     assert not at.exception
     fig = chart(at)
@@ -713,7 +713,7 @@ def test_words_by_corpus_and_words_over_time():
 
 def test_definitions_default_to_whole_sentences_for_different_words():
     at, data = word_app()
-    widget(at, 'radio', 'Workspace').set_value('Definitions').run()
+    widget(at, 'button_group', 'Workspace').set_value('Definitions').run()
     assert not at.exception
     assert widget(at, 'selectbox', 'Input format').value == 'Definition only'
     assert widget(at, 'selectbox', 'Representation to extract').value == 'Whole input'
@@ -756,7 +756,7 @@ def test_annotation_export_has_a_word_column_when_words_are_compared():
 
 def test_switching_back_and_forth_always_offers_a_valid_pair():
     at, data = word_app(group_by='word')
-    widget(at, 'radio', 'Workspace').set_value('Explore').run()
+    widget(at, 'button_group', 'Workspace').set_value('Explore').run()
     widget(at, 'selectbox', 'From word').set_value('balloon').run()
     assert widget(at, 'selectbox', 'From word').value == 'balloon'
     widget(at, 'radio', 'Colour and compare by').set_value('corpus').run()

@@ -10,3 +10,5 @@ plotly>=5.18
 requests
 umap-learn>=0.5
 pytest
+psutil>=5.9
+gensim>=4.3

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import pickle
+
 import re
 from typing import Any
 
@@ -319,67 +322,19 @@ def _build_figure_annotation(
     return fig
 
 
-def render_scatter(
-    coords_2d: np.ndarray,
-    corpus_per_point: list[str],
-    sentences: list[str],
-    target_word: str,
-    *,
-    annotations: dict[int, dict[str, int | None]] | None = None,
-    sense_classes: list[str] | None = None,
-    palette_name: str = "Tab10 (matplotlib)",
-    title: str = "Usage Embeddings",
-    axis_labels: tuple[str, str] = ("Dim 1", "Dim 2"),
-    definition_labels_per_point: list[str] | None = None,
-    definition_anchor_coords: np.ndarray | None = None,
-    definition_anchor_labels: list[str] | None = None,
-    show_definition_anchors: bool = False,
-    highlight_indices: list[int] | None = None,
-    highlight_label: str = "Highlighted",
-    enable_selection: bool = False,
-    interaction_mode: str = "lasso",
-    key: str = "scatter",
-    char_spans: list[tuple[int, int]] | None = None,
-    corpus_order: list[str] | None = None,
-    hidden_corpora: list[str] | tuple[str, ...] = (),
-    blind: bool = False,
-    omit_indices: list[int] | tuple[int, ...] = (),
-    annotation_scale: int | None = None,
-    hover_notes: list[str | None] | None = None,
-    colour_values: list[float | None] | None = None,
-    colour_title: str = "",
-    extra_traces: list | None = None,
-) -> dict:
-    """Render an interactive Plotly scatter plot in Streamlit.
+def _fingerprint(*parts) -> str | None:
+    """A digest of everything a figure is built from; None when something cannot be digested (then it is rebuilt)."""
+    digest = hashlib.blake2b(digest_size=16)
+    try:
+        for part in parts:
+            digest.update(pickle.dumps(part, protocol=pickle.HIGHEST_PROTOCOL))
+    except Exception:
+        return None
+    return digest.hexdigest()
 
-    Parameters
-    ----------
-    enable_selection : bool
-        If True, the figure accepts click or lasso selection. Only set for the
-        annotation chart.
-    hidden_corpora : list of str
-        Corpora switched off in the legend. They keep their legend entry, so
-        they can be switched back on, but their points are not drawn.
-    blind : bool
-        Draw every corpus in the same neutral colour and leave the corpus out
-        of the hover text, so usages can be annotated without knowing their
-        corpus. Legend entries keep their names and still switch corpora off.
-    annotation_scale : int, optional
-        The top of the rating scale when annotation is graded; ratings then
-        set the strength of each sense outline.
-    hover_notes : list of str, optional
-        An extra line for each point's hover text, such as its senses or date.
-    colour_values : list of float, optional
-        Colour points along a continuous scale (such as time) instead of by
-        corpus. The legend still switches corpora on and off.
-    extra_traces : list, optional
-        Further traces drawn on top, such as a trend line.
 
-    Returns
-    -------
-    dict
-        ``{"clicked_points": list[int]}`` — selected point indices.
-    """
+def _build_scatter_figure(*, coords_2d, corpus_per_point, sentences, target_word, annotations, sense_classes, palette_name, title, axis_labels, definition_labels_per_point, definition_anchor_coords, definition_anchor_labels, show_definition_anchors, highlight_indices, highlight_label, enable_selection, interaction_mode, char_spans, corpus_order, hidden_corpora, blind, omit_indices, annotation_scale, hover_notes, colour_values, colour_title, extra_traces):
+    """The figure :func:`render_scatter` draws."""
     annotations = normalise_annotations(annotations) if annotations else annotations
     unique_corpora = list(dict.fromkeys(corpus_order or corpus_per_point))
     palette = palette_for(palette_name, len(unique_corpora))
@@ -485,6 +440,85 @@ def render_scatter(
             fig.update_layout(dragmode="pan", clickmode="event+select")
         else:
             fig.update_layout(dragmode="lasso", clickmode="event+select")
+
+    return fig
+
+
+def render_scatter(
+    coords_2d: np.ndarray,
+    corpus_per_point: list[str],
+    sentences: list[str],
+    target_word: str,
+    *,
+    annotations: dict[int, dict[str, int | None]] | None = None,
+    sense_classes: list[str] | None = None,
+    palette_name: str = "Tab10 (matplotlib)",
+    title: str = "Usage Embeddings",
+    axis_labels: tuple[str, str] = ("Dim 1", "Dim 2"),
+    definition_labels_per_point: list[str] | None = None,
+    definition_anchor_coords: np.ndarray | None = None,
+    definition_anchor_labels: list[str] | None = None,
+    show_definition_anchors: bool = False,
+    highlight_indices: list[int] | None = None,
+    highlight_label: str = "Highlighted",
+    enable_selection: bool = False,
+    interaction_mode: str = "lasso",
+    key: str = "scatter",
+    char_spans: list[tuple[int, int]] | None = None,
+    corpus_order: list[str] | None = None,
+    hidden_corpora: list[str] | tuple[str, ...] = (),
+    blind: bool = False,
+    omit_indices: list[int] | tuple[int, ...] = (),
+    annotation_scale: int | None = None,
+    hover_notes: list[str | None] | None = None,
+    colour_values: list[float | None] | None = None,
+    colour_title: str = "",
+    extra_traces: list | None = None,
+) -> dict:
+    """Render an interactive Plotly scatter plot in Streamlit.
+
+    Parameters
+    ----------
+    enable_selection : bool
+        If True, the figure accepts click or lasso selection. Only set for the
+        annotation chart.
+    hidden_corpora : list of str
+        Corpora switched off in the legend. They keep their legend entry, so
+        they can be switched back on, but their points are not drawn.
+    blind : bool
+        Draw every corpus in the same neutral colour and leave the corpus out
+        of the hover text, so usages can be annotated without knowing their
+        corpus. Legend entries keep their names and still switch corpora off.
+    annotation_scale : int, optional
+        The top of the rating scale when annotation is graded; ratings then
+        set the strength of each sense outline.
+    hover_notes : list of str, optional
+        An extra line for each point's hover text, such as its senses or date.
+    colour_values : list of float, optional
+        Colour points along a continuous scale (such as time) instead of by
+        corpus. The legend still switches corpora on and off.
+    extra_traces : list, optional
+        Further traces drawn on top, such as a trend line.
+
+    Returns
+    -------
+    dict
+        ``{"clicked_points": list[int]}`` — selected point indices.
+    """
+    hidden = frozenset(hidden_corpora) & set(dict.fromkeys(corpus_order or corpus_per_point))
+    # The figure is rebuilt only when something it shows changes. Building a
+    # Plotly figure for thousands of points takes a noticeable fraction of a
+    # second, and most clicks on a page change something other than the plot.
+    inputs = dict(coords_2d=coords_2d, corpus_per_point=corpus_per_point, sentences=sentences, target_word=target_word, annotations=annotations, sense_classes=sense_classes, palette_name=palette_name, title=title, axis_labels=axis_labels, definition_labels_per_point=definition_labels_per_point, definition_anchor_coords=definition_anchor_coords, definition_anchor_labels=definition_anchor_labels, show_definition_anchors=show_definition_anchors, highlight_indices=highlight_indices, highlight_label=highlight_label, enable_selection=enable_selection, interaction_mode=interaction_mode, char_spans=char_spans, corpus_order=corpus_order, hidden_corpora=hidden_corpora, blind=blind, omit_indices=omit_indices, annotation_scale=annotation_scale, hover_notes=hover_notes, colour_values=colour_values, colour_title=colour_title, extra_traces=extra_traces)
+    signature = _fingerprint(inputs, st.session_state.get('theme_mode', 'Light'),
+                             st.session_state.get('point_size', 9), st.session_state.get('point_opacity', 0.8))
+    slot = f"_scatter_figure_{key}"
+    cached = st.session_state.get(slot)
+    if signature is not None and cached is not None and cached[0] == signature:
+        fig = cached[1]
+    else:
+        fig = _build_scatter_figure(**inputs)
+        st.session_state[slot] = (signature, fig)
 
     # --- Render ---
     if not enable_selection:

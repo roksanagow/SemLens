@@ -44,7 +44,7 @@ def pair_tables(at):
 @pytest.mark.parametrize('count',[1,3,10])
 def test_all_corpora_share_plot_and_single_corpus_has_no_change_scores(count):
     at,data=seeded_app(count)
-    widget(at,'radio','Workspace').set_value('Explore').run()
+    widget(at,'button_group','Workspace').set_value('Explore').run()
     assert not at.exception
     assert plotted_points(at)==len(data)
     assert len(at.metric)==(0 if count==1 else 6)
@@ -60,7 +60,7 @@ def test_all_corpora_share_plot_and_single_corpus_has_no_change_scores(count):
 
 def test_definition_pc_axis_distribution_and_scalar_scores():
     at,data=seeded_app(3,definitions=1)
-    widget(at,'radio','Workspace').set_value('Definitions').run()
+    widget(at,'button_group','Workspace').set_value('Definitions').run()
     assert not at.exception
     assert any(float(m.value)>0 for m in at.metric if m.label=='AMD')
     widget(at,'selectbox','Plot view').set_value('Definition axes').run()
@@ -92,7 +92,7 @@ def test_distribution_lines_share_bins_and_preserve_counts_and_proportions():
     values=torch.tensor([0.,2.,.1,.1,.1,1.,1.,1.,1.])
     at.session_state['def_space_all']=torch.stack([values,2-values,values],dim=1)
     at.session_state['definition_distribution']=True
-    widget(at,'radio','Workspace').set_value('Definitions').run()
+    widget(at,'button_group','Workspace').set_value('Definitions').run()
     assert not at.exception
     fig=json.loads(at.get('plotly_chart')[1].proto.spec)
     traces=fig['data']
@@ -121,7 +121,7 @@ def test_distribution_bins_follow_the_observed_distances():
     values=torch.linspace(.02,.28,len(data))
     at.session_state['def_space_all']=torch.stack([values,values.flip(0),values],dim=1)
     at.session_state['definition_distribution']=True
-    widget(at,'radio','Workspace').set_value('Definitions').run()
+    widget(at,'button_group','Workspace').set_value('Definitions').run()
     assert not at.exception
     fig=json.loads(at.get('plotly_chart')[1].proto.spec)
     for trace in fig['data']:
@@ -138,7 +138,7 @@ def test_distribution_bins_follow_the_observed_distances():
 
 def test_definition_axes_default_and_selected_coordinates_with_anchors():
     at,data=seeded_app(3,definitions=3)
-    widget(at,'radio','Workspace').set_value('Definitions').run()
+    widget(at,'button_group','Workspace').set_value('Definitions').run()
     assert not at.exception
     assert widget(at,'selectbox','Plot view').value=='Definition axes'
     assert widget(at,'selectbox','Horizontal axis').value=='Definition 1: sense 0'
@@ -179,7 +179,7 @@ def test_definition_axes_default_and_selected_coordinates_with_anchors():
 def test_existing_choose_axes_selection_migrates_to_definition_axes():
     at,_=seeded_app(2)
     at.session_state['defs_view']='Choose axes'
-    widget(at,'radio','Workspace').set_value('Definitions').run()
+    widget(at,'button_group','Workspace').set_value('Definitions').run()
     assert not at.exception
     assert widget(at,'selectbox','Plot view').value=='Definition axes'
 
@@ -195,7 +195,7 @@ def test_fetched_definitions_can_be_edited_applied_and_kept_across_navigation(mo
     monkeypatch.setattr(ui,'embed_definitions',embed)
     at,_=seeded_app(2)
     at.session_state['embedded_usages'].metadata['model_id']='test/encoder'
-    widget(at,'radio','Workspace').set_value('Definitions').run()
+    widget(at,'button_group','Workspace').set_value('Definitions').run()
     widget(at,'selectbox','Definition source').set_value('Wiktionary').run()
     widget(at,'button','Fetch definitions').click().run()
     editor=widget(at,'text_area','Edit definitions (one per line)')
@@ -210,8 +210,8 @@ def test_fetched_definitions_can_be_edited_applied_and_kept_across_navigation(mo
     assert at.session_state['def_space_all'].shape==(8,2)
     at.run()  # Creating a space increments the data revision.
     assert widget(at,'text_area','Edit definitions (one per line)').value==draft
-    widget(at,'radio','Workspace').set_value('Explore').run()
-    widget(at,'radio','Workspace').set_value('Definitions').run()
+    widget(at,'button_group','Workspace').set_value('Explore').run()
+    widget(at,'button_group','Workspace').set_value('Definitions').run()
     widget(at,'selectbox','Definition source').set_value('Wiktionary').run()
     assert widget(at,'text_area','Edit definitions (one per line)').value==draft
     # A failed refresh must preserve edits; a successful explicit refresh replaces them.
@@ -231,7 +231,7 @@ def test_definition_drafts_are_separate_for_dictionary_languages(monkeypatch):
     import app.ui_definitions as ui
     monkeypatch.setattr(ui,'fetch_wiktionary_entries',lambda *a,**kw:[])
     at,_=seeded_app(2)
-    widget(at,'radio','Workspace').set_value('Definitions').run()
+    widget(at,'button_group','Workspace').set_value('Definitions').run()
     widget(at,'selectbox','Definition source').set_value('Wiktionary').run()
     widget(at,'button','Fetch definitions').click().run()
     widget(at,'text_area','Edit definitions (one per line)').set_value('My own definition').run()
@@ -246,7 +246,7 @@ def test_definition_drafts_are_separate_for_dictionary_languages(monkeypatch):
 
 def test_amd_evidence_and_repeated_sampling_are_optional():
     at,data=seeded_app(3)
-    widget(at,'radio','Workspace').set_value('Explore').run()
+    widget(at,'button_group','Workspace').set_value('Explore').run()
     at.session_state['full_pairs']=True
     at.run()
     assert not at.exception
@@ -263,7 +263,7 @@ def test_amd_evidence_and_repeated_sampling_are_optional():
 
 def test_ranked_sentence_search_and_independently_scrollable_cells():
     at,_=seeded_app(2)
-    widget(at,'radio','Workspace').set_value('Explore').run()
+    widget(at,'button_group','Workspace').set_value('Explore').run()
     at.session_state['full_pairs']=True
     at.run()
     assert not at.exception
@@ -293,7 +293,7 @@ def test_theme_and_destination_navigation():
     widget(at,'radio','Theme').set_value('Dark').run()
     widget(at,'button','Continue to Explore').click().run()
     assert not at.exception
-    assert widget(at,'radio','Workspace').value=='Explore'
+    assert widget(at,'button_group','Workspace').value=='Explore'
     fig=json.loads(at.get('plotly_chart')[0].proto.spec)
     assert fig['layout']['paper_bgcolor']=='#0e1117'
     widget(at,'radio','Theme').set_value('Light').run()
@@ -303,12 +303,12 @@ def test_theme_and_destination_navigation():
     for label,destination in [('Continue to Definitions','Definitions'),('Continue to Annotation','Annotation'),('Return to Data & Model','Data & Model')]:
         widget(at,'button',label).click().run()
         assert not at.exception
-        assert widget(at,'radio','Workspace').value==destination
+        assert widget(at,'button_group','Workspace').value==destination
 
 
 def test_annotation_sense_buttons_and_default_click_selection():
     at,_=seeded_app(2)
-    widget(at,'radio','Workspace').set_value('Annotation').run()
+    widget(at,'button_group','Workspace').set_value('Annotation').run()
     for sense in ['finance','river']:
         widget(at,'text_input','New sense class').set_value(sense)
         widget(at,'button','Add class').click().run()
@@ -331,7 +331,7 @@ def test_annotation_sense_buttons_and_default_click_selection():
 def test_definition_readout_follows_usage_representation(representation,label):
     at,_=seeded_app(2)
     at.session_state['embedded_usages'].metadata['representation']=representation
-    widget(at,'radio','Workspace').set_value('Definitions').run()
+    widget(at,'button_group','Workspace').set_value('Definitions').run()
     assert widget(at,'selectbox','Representation to extract').value==label
     at.session_state['definition_heatmaps']=True
     at.run()
@@ -505,7 +505,7 @@ def test_annotation_review_excludes_unannotated_by_default():
     at,data=seeded_app(2)
     at.session_state['_annotation_store']={'annotations':{0:'finance'},'sense_classes':['finance'],
                                           'active_sense_class':'finance','history':[]}
-    widget(at,'radio','Workspace').set_value('Annotation').run()
+    widget(at,'button_group','Workspace').set_value('Annotation').run()
     assert not at.exception
     assert widget(at,'checkbox','Include unannotated occurrences').value is False
     assert len(at.dataframe[-1].value)==1
@@ -625,7 +625,7 @@ def corpus_visibility(fig):
 def test_corpora_switched_off_in_the_legend_stay_off_across_views():
     at,data=seeded_app(3)
     at.session_state['hidden_corpora']=['corpus_1','not loaded']
-    widget(at,'radio','Workspace').set_value('Explore').run()
+    widget(at,'button_group','Workspace').set_value('Explore').run()
     assert not at.exception
     expected={'corpus_0':True,'corpus_1':'legendonly','corpus_2':True}
     assert corpus_visibility(scatter_figure(at))==expected
@@ -635,7 +635,7 @@ def test_corpora_switched_off_in_the_legend_stay_off_across_views():
         assert corpus_visibility(scatter_figure(at))==expected
     # Still every corpus in the figure, so the legend can switch it back on.
     assert plotted_points(at)==len(data)
-    widget(at,'radio','Workspace').set_value('Definitions').run()
+    widget(at,'button_group','Workspace').set_value('Definitions').run()
     widget(at,'selectbox','Vertical axis').set_value('Definition 3: sense 2').run()
     assert corpus_visibility(scatter_figure(at))==expected
     widget(at,'selectbox','Highlight nearest definition').set_value('sense 0').run()
@@ -643,7 +643,7 @@ def test_corpora_switched_off_in_the_legend_stay_off_across_views():
     hidden_xy={(x,y) for t in fig['data'] if t['name']=='corpus_1' for x,y in zip(t['x'],t['y'])}
     highlighted=next((t for t in fig['data'] if t['name']=='Highlighted'),None)
     assert highlighted is None or not hidden_xy&set(zip(highlighted['x'],highlighted['y']))
-    widget(at,'radio','Workspace').set_value('Annotation').run()
+    widget(at,'button_group','Workspace').set_value('Annotation').run()
     assert corpus_visibility(scatter_figure(at))==expected
 
 
@@ -681,7 +681,7 @@ def test_annotation_plot_has_selectable_corpus_traces_and_skips_hidden_corpora(m
 def test_blind_annotation_hides_corpus_colour_and_hover_but_keeps_legend():
     at,data=seeded_app(3)
     at.session_state['hidden_corpora']=['corpus_2']
-    widget(at,'radio','Workspace').set_value('Annotation').run()
+    widget(at,'button_group','Workspace').set_value('Annotation').run()
     assert 'LDA' in widget(at,'selectbox','Plot view').options
     def corpus_traces():
         return [t for t in scatter_figure(at)['data'] if (t.get('meta') or {}).get('semlens_corpus')]
@@ -703,7 +703,7 @@ def test_blind_annotation_hides_corpus_colour_and_hover_but_keeps_legend():
 
 def test_inspector_chooses_pair_and_finds_closest_usages_in_other_corpora():
     at,data=seeded_app(3)
-    widget(at,'radio','Workspace').set_value('Explore').run()
+    widget(at,'button_group','Workspace').set_value('Explore').run()
     at.session_state['full_pairs']=True
     at.run()
     assert not at.exception
@@ -770,7 +770,7 @@ def test_occurrence_cap_accepts_all_or_a_positive_number():
 
 def test_help_icon_styling_leaves_buttons_with_help_text_alone():
     at,_=seeded_app(2)
-    widget(at,'radio','Workspace').set_value('Annotation').run()
+    widget(at,'button_group','Workspace').set_value('Annotation').run()
     css=''.join(el.proto.body for el in at.get('html'))
     assert '[data-testid="stTooltipIcon"] button:not([data-testid])' in css
     assert '[data-testid="stTooltipIcon"] button {' not in css
@@ -779,7 +779,7 @@ def test_help_icon_styling_leaves_buttons_with_help_text_alone():
 @pytest.mark.parametrize('count',[3,7,10])
 def test_score_heatmaps_print_a_number_in_every_cell(count):
     at,_=seeded_app(count)
-    widget(at,'radio','Workspace').set_value('Explore').run()
+    widget(at,'button_group','Workspace').set_value('Explore').run()
     assert not at.exception
     for chart in at.get('plotly_chart')[1:5]:
         heatmap=json.loads(chart.proto.spec)['data'][0]
@@ -810,15 +810,15 @@ def test_manual_definition_draft_and_source_survive_navigation():
     at.session_state['definitions_formatted']=[]
     at.session_state['definition_embeddings']=None
     at.session_state['def_space_all']=None
-    widget(at,'radio','Workspace').set_value('Definitions').run()
+    widget(at,'button_group','Workspace').set_value('Definitions').run()
     widget(at,'text_area','One definition per line').set_value('A financial institution\nThe side of a river').run()
-    widget(at,'radio','Workspace').set_value('Explore').run()
-    widget(at,'radio','Workspace').set_value('Definitions').run()
+    widget(at,'button_group','Workspace').set_value('Explore').run()
+    widget(at,'button_group','Workspace').set_value('Definitions').run()
     assert not at.exception
     assert widget(at,'text_area','One definition per line').value=='A financial institution\nThe side of a river'
     widget(at,'selectbox','Definition source').set_value('Wiktionary').run()
-    widget(at,'radio','Workspace').set_value('Annotation').run()
-    widget(at,'radio','Workspace').set_value('Definitions').run()
+    widget(at,'button_group','Workspace').set_value('Annotation').run()
+    widget(at,'button_group','Workspace').set_value('Definitions').run()
     assert widget(at,'selectbox','Definition source').value=='Wiktionary'
 
 
@@ -826,7 +826,7 @@ def test_fetched_definitions_can_be_narrowed_by_part_of_speech(monkeypatch):
     import app.ui_definitions as ui
     monkeypatch.setattr(ui,'fetch_wiktionary_entries',lambda *a,**kw:[('Noun','A financial institution'),('Verb','To tilt an aircraft'),('Noun','The edge of a river')])
     at,_=seeded_app(2)
-    widget(at,'radio','Workspace').set_value('Definitions').run()
+    widget(at,'button_group','Workspace').set_value('Definitions').run()
     widget(at,'selectbox','Definition source').set_value('Wiktionary').run()
     widget(at,'button','Fetch definitions').click().run()
     assert not at.exception
@@ -846,7 +846,7 @@ def test_sense_frequencies_by_corpus_follow_annotations_and_hide_while_blind():
     # corpus_0: two finance, one river; corpus_1: one river; corpus_2: nothing annotated.
     at.session_state['_annotation_store']={'annotations':{0:'finance',1:'finance',2:'river',5:'river'},
                                           'sense_classes':['finance','river'],'active_sense_class':'finance','history':[]}
-    widget(at,'radio','Workspace').set_value('Annotation').run()
+    widget(at,'button_group','Workspace').set_value('Annotation').run()
     assert not at.exception
     table=at.dataframe[0].value.set_index('Sense')
     assert list(table.index)==['finance','river','Annotated usages','Loaded usages']
@@ -886,7 +886,7 @@ def test_annotation_export_keeps_extra_columns_from_the_usage_table():
                 'corpus_labels':data.corpus_labels,'data_revision':1}.items():
         at.session_state[k]=v
     at.session_state['_annotation_store']={'annotations':{0:'finance'},'sense_classes':['finance'],'active_sense_class':'finance','history':[]}
-    widget(at,'radio','Workspace').set_value('Annotation').run()
+    widget(at,'button_group','Workspace').set_value('Annotation').run()
     assert not at.exception
     from app.ui_annotations import annotation_table
     exported=annotation_table(data,{0:'finance'})
@@ -906,7 +906,7 @@ def test_search_rings_matching_usages_in_the_annotation_plot():
     assert find_usages(sentences,' , * ')==[]
     at,data=seeded_app(2)
     at.session_state['hidden_corpora']=['corpus_1']
-    widget(at,'radio','Workspace').set_value('Annotation').run()
+    widget(at,'button_group','Workspace').set_value('Annotation').run()
     widget(at,'text_input','Highlight usages containing').set_value('example 2, example 6').run()
     assert not at.exception
     assert any('2 of 8 usages contain' in c.value and 'corpus_0: 1, corpus_1: 1' in c.value for c in at.caption)
@@ -929,7 +929,7 @@ def test_target_is_highlighted_in_evidence_tables():
     nearest=nearest_usage_html(pd.DataFrame([['old',.1,'The bank closed.',(4,8)]],columns=['Corpus','Distance','Closest usage','Span']))
     assert 'The <mark>bank</mark> closed.' in nearest
     at,_=seeded_app(2)
-    widget(at,'radio','Workspace').set_value('Explore').run()
+    widget(at,'button_group','Workspace').set_value('Explore').run()
     at.session_state['full_pairs']=True
     at.run()
     assert all(table.count('<mark>bank</mark>')==2*table.count('<tr><td>') for table in pair_tables(at))
@@ -937,7 +937,7 @@ def test_target_is_highlighted_in_evidence_tables():
 
 def test_change_over_time_and_scores_follow_chronology_and_legend():
     at,_=seeded_app(5)
-    widget(at,'radio','Workspace').set_value('Explore').run()
+    widget(at,'button_group','Workspace').set_value('Explore').run()
     assert len(at.get('plotly_chart'))==5
     at.session_state['chronological']=True
     at.run()
@@ -968,7 +968,7 @@ def test_change_over_time_and_scores_follow_chronology_and_legend():
 
 def test_pca_axes_report_their_share_of_the_variation_and_help_explains_views():
     at,_=seeded_app(2)
-    widget(at,'radio','Workspace').set_value('Explore').run()
+    widget(at,'button_group','Workspace').set_value('Explore').run()
     layout=scatter_figure(at)['layout']
     from sklearn.decomposition import PCA
     ratios=PCA(2).fit(at.session_state['embedded_usages'].embeddings.numpy()).explained_variance_ratio_
@@ -996,8 +996,8 @@ def test_first_screen_guides_a_new_user_and_offers_an_example():
     assert data.usages[0].metadata['date'].startswith('1999')
     # The guide steps aside once data is loaded, and the chosen source is remembered.
     assert not next(e for e in at.expander if e.label=='New here? How SemLens works').proto.expanded
-    widget(at,'radio','Workspace').set_value('Annotation').run()
-    widget(at,'radio','Workspace').set_value('Data & Model').run()
+    widget(at,'button_group','Workspace').set_value('Annotation').run()
+    widget(at,'button_group','Workspace').set_value('Data & Model').run()
     assert widget(at,'selectbox','Data source').value.startswith('Example')
     assert widget(at,'selectbox','Language model').value.startswith('XL-LEXEME')
 
@@ -1033,8 +1033,8 @@ def test_review_shows_frequencies_forms_and_a_sortable_concordance():
     at.run()
     assert sorted(target for target,_ in lines())==['bank','banks']
     # The pasted texts are offered again after visiting another workspace.
-    widget(at,'radio','Workspace').set_value('Explore').run()
-    widget(at,'radio','Workspace').set_value('Data & Model').run()
+    widget(at,'button_group','Workspace').set_value('Explore').run()
+    widget(at,'button_group','Workspace').set_value('Data & Model').run()
     assert widget(at,'selectbox','Data source').value=='Paste sentences'
     assert at.text_area[1].value=='A river bank.\nBanking on rain.'
     widget(at,'text_input','Target word').set_value('river')
@@ -1045,7 +1045,7 @@ def test_review_shows_frequencies_forms_and_a_sortable_concordance():
 
 def test_plot_options_set_components_and_projection_settings(monkeypatch):
     at,_=seeded_app(3)
-    widget(at,'radio','Workspace').set_value('Explore').run()
+    widget(at,'button_group','Workspace').set_value('Explore').run()
     widget(at,'number_input','Horizontal component').set_value(2)
     widget(at,'number_input','Vertical component').set_value(3).run()
     assert not at.exception
@@ -1084,7 +1084,7 @@ def test_display_settings_change_points_palette_and_order():
     from semlens.utils import palette_for,SEQUENTIAL_PALETTE
     at,_=seeded_app(3)
     at.session_state['corpus_order']=['corpus_2','corpus_0','corpus_1']
-    widget(at,'radio','Workspace').set_value('Explore').run()
+    widget(at,'button_group','Workspace').set_value('Explore').run()
     widget(at,'slider','Point size').set_value(14)
     widget(at,'slider','Point opacity').set_value(.5)
     widget(at,'selectbox','Colour palette').set_value(SEQUENTIAL_PALETTE).run()
@@ -1107,7 +1107,7 @@ def test_annotation_tools_rename_import_and_show_remaining(monkeypatch):
     at,data=seeded_app(2)
     at.session_state['_annotation_store']={'annotations':{0:'finance',1:'money',5:'river'},'sense_classes':['finance','money','river'],
                                           'active_sense_class':'money','history':[]}
-    widget(at,'radio','Workspace').set_value('Annotation').run()
+    widget(at,'button_group','Workspace').set_value('Annotation').run()
     assert not at.exception
     # Renaming onto an existing class merges the two, and can be undone.
     widget(at,'selectbox','Class to rename').set_value('money')
@@ -1143,7 +1143,7 @@ def test_annotation_tools_rename_import_and_show_remaining(monkeypatch):
 def test_annotation_list_shows_concordance_lines_with_their_senses():
     at,data=seeded_app(2)
     at.session_state['_annotation_store']={'annotations':{1:'finance'},'sense_classes':['finance','river'],'active_sense_class':'finance','history':[]}
-    widget(at,'radio','Workspace').set_value('Annotation').run()
+    widget(at,'button_group','Workspace').set_value('Annotation').run()
     at.session_state['annotation_list']=True
     at.run()
     assert not at.exception

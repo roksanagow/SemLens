@@ -2,6 +2,7 @@
 from __future__ import annotations
 from dataclasses import asdict
 import hashlib
+import time
 import io
 import json
 from pathlib import Path
@@ -23,6 +24,9 @@ from semlens.spaces import project_to_definition_space
 from app.state import set_data,reset_downstream_of
 from app.annotation_store import get_annotations,get_sense_classes,get_options,restore_annotations
 from app.common import ROOT,STORAGE,get_model,show_usage,ordered_labels
+from semlens.resources import count_tokens,embedding_cost
+from app.costs import (MODEL_SIZES,_hub_model_size,_folder_weights,cost_check,known_speed,model_profile,
+                       device_kind,measure_speed,remember_speed,model_is_downloaded)
 from app.presentation import readable_table,concordance_html
 
 
@@ -41,14 +45,6 @@ MODEL_PRESETS={
     'XLM-RoBERTa base · general purpose, smaller and faster':'FacebookAI/xlm-roberta-base',
     'BERT base · English only, small':'google-bert/bert-base-uncased',
     'Another model…':None,
-}
-# Parameters, download in GB, disk space in GB. XL-LEXEME's repository has only
-# the older .bin weights; transformers also saves a converted .safetensors copy.
-MODEL_SIZES={
-    'pierluigic/xl-lexeme':(560e6,2.2,4.5),
-    'FacebookAI/xlm-roberta-large':(561e6,2.2,2.2),
-    'FacebookAI/xlm-roberta-base':(279e6,1.1,1.1),
-    'google-bert/bert-base-uncased':(110e6,0.4,0.4),
 }
 MODEL_HELP=('The model that reads each sentence and turns each usage into numbers. All of these read many languages unless marked English.\n\n'
             'Choose **Another model…** to use any other encoder:\n\n'
@@ -71,25 +67,6 @@ def normalise_model_reference(text):
         return str(Path(text).expanduser())
     match=re.match(r'^(?:https?://)?(?:www\.)?huggingface\.co/([^/\s]+/[^/\s?#]+)',text)
     return match.group(1) if match else text
-
-
-@st.cache_data(ttl=24*3600,show_spinner=False)
-def _hub_model_size(model_id):
-    """(parameters or None, safetensors bytes, .bin bytes) from Hugging Face, or None when it cannot be looked up."""
-    try:
-        from huggingface_hub import HfApi
-        info=HfApi().model_info(model_id,files_metadata=True,timeout=6)
-    except Exception:
-        return None
-    files=[(f.rfilename,f.size or 0) for f in info.siblings or []]
-    safe=sum(size for name,size in files if name.endswith('.safetensors'))
-    binary=sum(size for name,size in files if name.endswith('.bin') and 'pytorch_model' in name)
-    params=getattr(info.safetensors,'total',None) if info.safetensors else None
-    return params,safe,binary
-
-
-def _folder_weights(path):
-    return sum(f.stat().st_size for pattern in ('*.safetensors','*.bin','*.pt') for f in Path(path).expanduser().glob(pattern))
 
 
 def _model_size_note(model_id):
@@ -678,11 +655,53 @@ def _save_word_embeddings():
         st.download_button('Download word embeddings',data=content,file_name=f'{safe}.semlens',mime='application/zip')
 
 
+def _model_cost(action,model_id,texts,vectors,layer,max_length,batch_size,disk_bytes=0.0,vector_bytes=4):
+    """The cost of running ``model_id`` over ``texts``, or None when the model cannot be looked up."""
+    profile=model_profile(model_id)
+    if profile is None:
+        return None
+    loaded=st.session_state.get('_loaded_model')
+    tokenizer=loaded.tokenizer if loaded is not None and loaded.name==model_id else None
+    cost=embedding_cost(action,texts=texts,tokenizer=tokenizer,parameters=profile['parameters'],hidden=profile['hidden'],
+                        layers=profile['layers'],device=device_kind(),vectors=vectors,batch_size=batch_size,max_length=max_length,
+                        tokens_per_second=known_speed(model_id,batch_size,max_length),download_bytes=profile['download_bytes'],
+                        disk_bytes=profile['extra_disk_bytes']+disk_bytes,vector_bytes=vector_bytes)
+    if profile['download_bytes']:
+        cost.details.append(f'the model is downloaded first ({format_bytes(profile["download_bytes"])}), once')
+    return cost
+
+
+def _offer_speed_trial(cost,model_id,texts,layer,max_length,batch_size,key):
+    """For a long job with only a rough estimate, offer to time the model for five seconds."""
+    if cost is None or not cost.rough_time or cost.seconds is None or cost.seconds<60:
+        return
+    if not model_is_downloaded(model_id):
+        st.caption('The time is a rough guess from the model’s size. It is measured on this computer once the model is downloaded.')
+        return
+    if st.button('Measure the speed on this computer (about 5 seconds)',key=f'measure_speed_{key}'):
+        with st.spinner('Timing the model on a few of your sentences…'):
+            measure_speed(get_model(model_id),texts,batch_size,max_length,layer)
+        st.rerun()
+
+
+def _embedding_cost_check(data,model_id,layer,max_length,batch_size):
+    """Show what embedding the loaded usages costs; True when it may start."""
+    texts=list(dict.fromkeys(data.sentences))
+    cost=_model_cost('Embedding the loaded usages',model_id,texts,len(data),layer,max_length,batch_size)
+    if cost is None:
+        st.caption('The cost could not be estimated: the model could not be looked up. Check its name, or the internet connection for a first download.')
+        return True
+    allowed=cost_check(cost,'embed_usages',remedy='Set a maximum number of occurrences per corpus under Usage selection options, '
+                       'lower the inference batch size, or choose a smaller model.')
+    _offer_speed_trial(cost,model_id,texts,layer,max_length,batch_size,'embed')
+    return allowed
+
+
 def _embedding_controls(corpus_input):
     st.subheader('Embeddings')
     st.caption('The language model reads every loaded sentence and represents each usage as a list of numbers (an embedding). '
                'Usages it treats as similar in meaning get similar numbers; everything in the other workspaces is built on them.')
-    representation=st.radio('Represent each usage by',['Target word','Whole sentence'],horizontal=True,
+    representation=st.radio('Represent each usage by',['Target word','Whole sentence'],horizontal=True,key='encoder_representation',
                             help='**Target word** (recommended): the model’s representation of the word itself, as coloured by its sentence. Best for word meaning.\n\n'
                                  '**Whole sentence**: the average over every word of the sentence. It also reflects what the sentence is about, '
                                  'so usages can differ because the topic differs.')
@@ -691,7 +710,7 @@ def _embedding_controls(corpus_input):
         preset=st.selectbox('Language model',list(MODEL_PRESETS),key='encoder_preset',help=MODEL_HELP)
         model_id=MODEL_PRESETS[preset]
         if model_id is None:
-            typed=st.text_input('Encoder model',value='pierluigic/xl-lexeme',key='encoder_model',
+            typed=st.text_input('Encoder model',key='encoder_model',
                                 placeholder='organisation/model, a Hugging Face link, or a folder on this computer')
             st.caption('A model from Hugging Face: its name (such as FacebookAI/xlm-roberta-base) or its page’s link. '
                        'A model from GitHub or elsewhere: download its files into a folder (config.json, the weights and the tokenizer files) and give the folder’s path.')
@@ -702,26 +721,33 @@ def _embedding_controls(corpus_input):
         note=_model_size_note(model_id)
         if note:
             st.caption(note)
-        layer=int(st.number_input('Layer (-1 = final output)',value=-1,step=1,key='encoder_layer',
+        layer=int(st.number_input('Layer (-1 = final output)',step=1,key='encoder_layer',
                                   help='Negative values count back from the top: -1 is the final output, -2 the penultimate layer, -3 the one before it. '
                                        '0 is the input embedding layer; 1 and higher count transformer layers from the bottom.'))
-        max_length=int(st.number_input('Tokens per context window',min_value=32,max_value=4096,value=256,step=32,
-                                       help='How much text the model reads at once, in word pieces (roughly 0.75 words each). Longer contexts are read in overlapping windows, so nothing is cut off.'))
-        batch_size=int(st.number_input('Inference batch size',min_value=1,max_value=128,value=16,
+        max_length=int(st.number_input('Tokens per context window',min_value=32,max_value=4096,step=32,key='encoder_max_length',
+                                       help='How much text the model reads at once, in subword tokens (roughly 0.75 words each). Longer contexts are read in overlapping windows, so nothing is cut off.'))
+        batch_size=int(st.number_input('Inference batch size',min_value=1,max_value=128,key='encoder_batch_size',
                                        help='How many contexts are processed together. It affects speed and memory only, never the results. Lower it if the computer runs out of memory.'))
-        use_markers=st.checkbox('Mark the target word when the model supports it',value=True,key='encoder_target_markers',
+        use_markers=st.checkbox('Mark the target word when the model supports it',key='encoder_target_markers',
                                 help='XL-LEXEME was trained with the target wrapped in two special tokens, `<t>` and `</t>`. With this on, SemLens adds them '
                                      'around each target before encoding Target word representations, and around the word in each definition. '
                                      'Models without these tokens, and Whole sentence representations, are unaffected. '
                                      'Turn it off to encode the plain sentence, as earlier versions of SemLens did.')
-    if st.button('Embed loaded usages',type='primary',disabled=st.session_state.target_word_data is None):
+    data=st.session_state.target_word_data
+    allowed=data is not None and _embedding_cost_check(data,model_id,layer,max_length,batch_size)
+    if st.button('Embed loaded usages',type='primary',disabled=not allowed):
         try:
             progress=st.progress(0.0)
             with st.spinner('Loading the encoder and embedding usages…'):
                 model=get_model(model_id)
+                started=time.perf_counter()
                 embedded=embed_usages(model,st.session_state.target_word_data,representation=rep,layer=layer,max_length=max_length,
                                      batch_size=batch_size,progress_callback=lambda b,n:progress.progress(b/n),
                                      target_markers=None if use_markers else False)
+                # The run itself measures the speed, for the next estimate.
+                elapsed=time.perf_counter()-started
+                if elapsed>2:
+                    remember_speed(model.name,count_tokens(list(dict.fromkeys(data.sentences)),model.tokenizer)/elapsed,batch_size,max_length)
             reset_downstream_of('embeddings')
             st.session_state.embedded_usages=embedded
             st.session_state.model_name=model.name
@@ -763,7 +789,15 @@ def _embedding_controls(corpus_input):
             if current and current[0]==signature:
                 estimate=current[1]
                 st.info(f'Estimated disk space: {format_bytes(estimate.estimated_bytes)} for {estimate.sentences:,} sentences and {estimate.tokens:,} tokens. Includes source text and an allowance for the index; final size may differ.')
-                if st.button('Compute & save corpus embeddings',type='primary'):
+                records=corpus_sentences(texts,split=split)
+                cost=_model_cost('Saving corpus embeddings',model_id,[r.sentence for r in records],0,layer,max_length,batch_size,
+                                 disk_bytes=estimate.estimated_bytes)
+                allowed=True
+                if cost is not None:
+                    # Vectors are written to disk as they are made, so memory holds the model and one batch.
+                    allowed=cost_check(cost,'save_corpora',remedy='Save sentence representations only, use float16, or save fewer or smaller corpora.')
+                    _offer_speed_trial(cost,model_id,[r.sentence for r in records][:200],layer,max_length,batch_size,'save_corpora')
+                if st.button('Compute & save corpus embeddings',type='primary',disabled=not allowed):
                     try:
                         validate_corpus_names(names)
                         progress=st.progress(0.0)

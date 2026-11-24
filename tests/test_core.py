@@ -400,3 +400,30 @@ def test_wiktionary_entries_from_other_editions():
 """
     assert _parse_wikitext_entries(spanish, "English", edition="es") == [
         ("sustantivo femenino", "Pequeña bola de aire."), ("sustantivo femenino", "(economía) Efecto de la especulación.")]
+
+
+def test_samd_matching_in_chunks_equals_checking_every_pair_in_turn():
+    import numpy as np
+    import torch
+    from semlens.metrics import _samd_from_distances
+
+    def one_by_one(values):
+        n1, n2 = values.shape
+        used1, used2, matched = np.zeros(n1, bool), np.zeros(n2, bool), []
+        for flat in np.argsort(values, axis=None, kind='stable'):
+            i, j = divmod(int(flat), n2)
+            if used1[i] or used2[j]:
+                continue
+            matched.append(float(values[i, j]))
+            used1[i] = used2[j] = True
+            if len(matched) == min(n1, n2):
+                break
+        return float(np.mean(matched))
+
+    rng = np.random.default_rng(1)
+    for n1, n2 in [(1, 1), (1, 7), (7, 1), (5, 9), (60, 30), (200, 350)]:
+        for ties in (False, True):
+            values = rng.random((n1, n2)).astype(np.float32)
+            values = np.round(values, 1) if ties else values
+            for chunk in (1, 3, 4096):
+                assert _samd_from_distances(torch.from_numpy(values), chunk) == one_by_one(values)
