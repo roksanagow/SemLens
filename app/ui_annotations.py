@@ -242,9 +242,36 @@ def _sense_buttons(classes,annotations):
                 box-shadow:{f'0 0 0 1px {colour}' if selected else 'none'} !important; }}
                 .st-key-sense_{i} button p {{ color:var(--sl-text) !important; }}</style>''')
             st.button(('✓ ' if selected else '')+sense,key=f'sense_{i}',
-                      help=f'{sum(sense in label for label in annotations.values())} annotated occurrences',
+                      help=f'{sum(sense in label for label in annotations.values())} annotated usages',
                       on_click=set_active_sense_class,args=(sense,))
     return active
+
+
+def _hide_guide(for_good):
+    st.session_state['_annotation_guide_hidden']=True
+    if for_good:
+        st.session_state['annotation_guide_off']=True
+
+
+def _render_guide():
+    """Four steps for a first annotation, ticked off as they are done. Shown until “Don't show this again”."""
+    if st.session_state.get('annotation_guide_off') or st.session_state.get('_annotation_guide_hidden'):
+        return
+    senses,annotations=get_sense_classes(),get_annotations()
+    steps=[(bool(senses),'**Name a sense** in the box below, such as *financial*, and click **Add sense**. Add one for each sense you want to tell apart.'),
+           (bool(senses),'**Choose it**: click its button. The chosen sense has a coloured border and a ✓.'),
+           (bool(annotations),'**Click a point** in the plot to give that usage the chosen sense, or switch Selection to **Lasso** and circle a group. '
+                              'Hover a point first to read its sentence.'),
+           (bool(annotations),'**Read the counts** below the plot: how often each sense occurs in each corpus. Undo is under the plot.')]
+    with st.container(border=True,key='annotation_guide'):
+        st.markdown('**How to annotate, step by step**')
+        for number,(done,text) in enumerate(steps,1):
+            st.markdown(f'{":green[:material/check_circle:]" if done else f"**{number}.**"} {text}')
+        with st.container(horizontal=True):
+            st.button('Hide for now',type='tertiary',on_click=_hide_guide,args=(False,),key='annotation_guide_hide',
+                      help='It comes back next time SemLens opens.')
+            st.button('Don’t show this again',type='tertiary',on_click=_hide_guide,args=(True,),key='annotation_guide_off_button',
+                      help='Remembered on this computer. Restore the default settings (bottom of the sidebar) to see it again.')
 
 
 def _rating_picker():
@@ -280,48 +307,64 @@ def render_annotations():
         render_previous_annotations(None)
         return
     data=st.session_state.target_word_data
+    _render_guide()
     render_grouping_controls(data,'annotation')
-    render_previous_annotations(data)
     notice=st.session_state.pop('_annotation_notice',None)
     if notice:
         st.success(notice)
+    # On screen: the senses, then the plot, then the options. The options are drawn
+    # first in the code, because the plot depends on them.
+    senses_area=st.container()
+    plot_area=st.container()
+    options_area=st.container()
+    has_defs=st.session_state.def_space_all is not None
+    with options_area:
+        st.markdown('**Options**')
+        c1,c2=st.columns(2)
+        source=c1.radio('Annotate on',['Full embeddings','Definition space'] if has_defs else ['Full embeddings'],horizontal=True,
+                        key='annotation_space',
+                        format_func={'Full embeddings':'The usage map (full embeddings)','Definition space':'The definitions map (definition space)'}.get,
+                        help='**The usage map** (full embeddings): the usages as in Explore, placed by everything the model gives them.\n\n'
+                             '**The definitions map** (definition space): the usages placed by their distance to each definition, '
+                             'once it is created in Definitions.')
+        with c2:
+            blind=st.toggle('Blind annotation',key='blind_annotation',
+                            help='Draw every usage in the same colour and leave the corpus out of the hover text, so you can annotate without knowing '
+                                 'which corpus a usage comes from. Corpus names stay in the legend: click one to hide or show its usages.')
+            remaining_only=st.toggle('Show only usages without a sense',key='annotation_remaining_only',
+                                     help='Leaves annotated usages out of the plot, so what is left to do stands out. They return when you switch this off.')
+        view=current_view(data)
+        # Blind annotation hides the corpus. Words, which the sentence shows anyway, keep their colours.
+        hide_groups=blind and view.group_by=='corpus'
+        if blind:
+            st.caption('Corpus colours, hover labels and time views are hidden. LDA is unavailable while blind, because it arranges usages by corpus.'
+                       if hide_groups else 'Corpus names and time views are hidden. Words keep their colours, since each sentence shows its word anyway.')
+        render_annotation_options()
+        render_previous_annotations(data)
     classes=get_sense_classes()
     annotations=get_annotations()
-    with st.form('add_sense',clear_on_submit=True):
-        c1,c2=st.columns([3,1])
-        name=c1.text_input('New sense class',placeholder='A short label, such as: financial',
-                           help='A sense, or any other category you want to label usages with. Each class becomes a button; add as many as you need.')
-        if c2.form_submit_button('Add class') and name.strip():
-            add_sense_class(name.strip())
-            set_active_sense_class(name.strip())
-            st.rerun()
-    active=_sense_buttons(classes,annotations) if classes else ''
-    if not classes:
-        st.caption('Add a sense class, then select usages in the plot.')
-    render_annotation_options()
-    rating=_rating_picker() if _graded() and classes and not _asks_for_rating() else None
-    several=with_several_senses(annotations)
-    if _asks_for_rating():
-        how=('click a point or lasso a group and type the rating; clicking a usage that has the sense also lets you remove it'
-             if _multiple() else 'click a point (or lasso a group) and type the rating')
-    else:
-        how=('click a point to add the active sense or take it off again, or lasso a group to add it to all of them'
-             if _multiple() else 'click a point (or select a group) to assign it immediately')
-    st.caption(f'{len(annotations):,} of {len(data):,} occurrences annotated'+(f', {several:,} with several senses' if several else '')
-               +f'. Choose a sense above, then {how}.')
-    has_defs=st.session_state.def_space_all is not None
-    source=st.radio('Annotation space',['Full embeddings','Definition space'] if has_defs else ['Full embeddings'],horizontal=True)
-    blind=st.toggle('Blind annotation',key='blind_annotation',
-                    help='Draw every usage in the same colour and leave the corpus out of the hover text, so you can annotate without knowing '
-                         'which corpus a usage comes from. Corpus names stay in the legend: click one to hide or show its usages.')
-    view=current_view(data)
-    # Blind annotation hides the corpus. Words, which the sentence shows anyway, keep their colours.
-    hide_groups=blind and view.group_by=='corpus'
-    if blind:
-        st.caption('Corpus colours, hover labels and time views are hidden. LDA is unavailable while blind, because it arranges usages by corpus.'
-                   if hide_groups else 'Corpus names and time views are hidden. Words keep their colours, since each sentence shows its word anyway.')
-    remaining_only=st.toggle('Show only usages without a sense',key='annotation_remaining_only',
-                             help='Leaves annotated usages out of the plot, so what is left to do stands out. They return when you switch this off.')
+    with senses_area:
+        with st.form('add_sense',clear_on_submit=True):
+            c1,c2=st.columns([3,1])
+            name=c1.text_input('New sense',placeholder='A short label, such as: financial',
+                               help='A sense, or any other category you want to label usages with. Each sense becomes a button; add as many as you need.')
+            if c2.form_submit_button('Add sense') and name.strip():
+                add_sense_class(name.strip())
+                set_active_sense_class(name.strip())
+                st.rerun()
+        active=_sense_buttons(classes,annotations) if classes else ''
+        if not classes:
+            st.caption('Add a sense, then select usages in the plot.')
+        rating=_rating_picker() if _graded() and classes and not _asks_for_rating() else None
+        several=with_several_senses(annotations)
+        if _asks_for_rating():
+            how=('click a point or lasso a group and type the rating; clicking a usage that has the sense also lets you remove it'
+                 if _multiple() else 'click a point (or lasso a group) and type the rating')
+        else:
+            how=('click a point to add the active sense or take it off again, or lasso a group to add it to all of them'
+                 if _multiple() else 'click a point (or select a group) to assign it immediately')
+        st.caption(f'{len(annotations):,} of {len(data):,} usages annotated'+(f', {several:,} with several senses' if several else '')
+                   +f'. Choose a sense above, then {how}.')
     def_labels=None
     vectors=eu.embeddings
     if source=='Definition space':
@@ -335,51 +378,53 @@ def render_annotations():
     group_notes=view.hover_notes(hide_corpus=blind)
     if group_notes:
         notes=[a if not b else (b if not a else f'{a}\n{b}') for a,b in zip(notes,group_notes)]
-    result=render_plot(vdata,view.embeddings(vectors),key='annotation',definition_labels=def_labels,annotation=True,
-                       annotations=vann,sense_classes=classes,blind=blind,blind_groups=hide_groups,
-                       omit_indices=sorted(vann) if remaining_only else (),
-                       annotation_scale=_scale() if _graded() else None,hover_notes=notes,
-                       download_columns=view.download_columns(),noun=view.noun)
-    selected=view.to_original(result['clicked_points'])
-    if assign_new_selection({**result,'clicked_points':selected},active,rating) and not st.session_state.get('_rating_request'):
-        st.rerun()
-    if st.session_state.get('_rating_request'):
-        _rating_dialog()
-    st.caption(f'{len(selected)} occurrence(s) selected.')
-    if _multiple():
-        c1,c2,c3=st.columns(3)
-        if c1.button('Remove the active sense from selected',disabled=not selected or not active):
-            remember_annotations()
-            for i in selected:
-                remove_sense(i,active)
+    with plot_area:
+        result=render_plot(vdata,view.embeddings(vectors),key='annotation',definition_labels=def_labels,annotation=True,
+                           annotations=vann,sense_classes=classes,blind=blind,blind_groups=hide_groups,
+                           omit_indices=sorted(vann) if remaining_only else (),
+                           annotation_scale=_scale() if _graded() else None,hover_notes=notes,
+                           download_columns=view.download_columns(),noun=view.noun)
+        selected=view.to_original(result['clicked_points'])
+        if assign_new_selection({**result,'clicked_points':selected},active,rating) and not st.session_state.get('_rating_request'):
             st.rerun()
-        if c2.button('Remove all senses from selected',disabled=not selected):
-            remember_annotations()
-            for i in selected:
-                remove_annotation(i)
+        if st.session_state.get('_rating_request'):
+            _rating_dialog()
+        st.caption(f'{len(selected)} usage(s) selected.')
+        if _multiple():
+            c1,c2,c3=st.columns(3)
+            if c1.button('Remove the active sense from selected',disabled=not selected or not active):
+                remember_annotations()
+                for i in selected:
+                    remove_sense(i,active)
+                st.rerun()
+            if c2.button('Remove all senses from selected',disabled=not selected):
+                remember_annotations()
+                for i in selected:
+                    remove_annotation(i)
+                st.rerun()
+        else:
+            c1,c3=st.columns(2)
+            if c1.button('Clear selected',disabled=not selected):
+                remember_annotations()
+                for i in selected:
+                    remove_annotation(i)
+                st.rerun()
+        if c3.button('Undo last annotation change'):
+            undo_annotations()
             st.rerun()
-    else:
-        c1,c3=st.columns(2)
-        if c1.button('Clear selected',disabled=not selected):
-            remember_annotations()
-            for i in selected:
-                remove_annotation(i)
-            st.rerun()
-    if c3.button('Undo last annotation change'):
-        undo_annotations()
-        st.rerun()
+    st.divider()
     render_annotation_list(vdata,vann,classes,hide_groups,view)
-    with st.expander('Manage classes and annotations'):
+    with st.expander('Manage senses and annotations'):
         if classes:
             with st.form('rename_sense',clear_on_submit=True):
                 cols=st.columns([2,2,1])
-                old=cols[0].selectbox('Class to rename',classes)
-                new=cols[1].text_input('New name',help='Giving it the name of another class merges the two.')
+                old=cols[0].selectbox('Sense to rename',classes)
+                new=cols[1].text_input('New name',help='Giving it the name of another sense merges the two.')
                 if cols[2].form_submit_button('Rename') and new.strip():
                     rename_sense_class(old,new)
                     st.rerun()
-            remove=st.selectbox('Class to remove',classes)
-            if st.button('Remove class and its annotations'):
+            remove=st.selectbox('Sense to remove',classes)
+            if st.button('Remove the sense and its annotations'):
                 remove_sense_class(remove)
                 st.rerun()
         confirm=st.checkbox('Delete all annotations')
@@ -388,7 +433,7 @@ def render_annotations():
             st.rerun()
     render_sense_frequencies(vdata,vann,classes,hide_groups,view.noun)
     with st.expander('Review and export annotations'):
-        include_all=st.checkbox('Include unannotated occurrences',value=False)
+        include_all=st.checkbox('Include unannotated usages',value=False)
         df=annotation_table(data,annotations,get_options(),classes,loaded_words(data)[0] if words_active(data) else None)
         if not include_all:
             df=df[df.sense!='']
@@ -765,7 +810,7 @@ def render_previous_annotations(data):
                         matched,unmatched,added,notes=load_analysis_annotations(data,load_project(choice if upload is None else upload),replace=replace)
                     st.session_state['_annotation_notice']=(f'Loaded {matched:,} annotations'
                                                             +(f'; {unmatched:,} did not match a loaded usage' if unmatched else '')
-                                                            +(f'; new classes: {", ".join(added)}' if added else '')+'. '
+                                                            +(f'; new senses: {", ".join(added)}' if added else '')+'. '
                                                             +''.join(n+' ' for n in notes)+'Undo restores the previous state.')
                 st.rerun()
             except Exception as exc:
@@ -782,7 +827,7 @@ def render_annotation_list(data,annotations,classes,blind,view=None):
         if not panel.open:
             return
         if not classes:
-            st.caption('Add a sense class above first.')
+            st.caption('Add a sense above first.')
             return
         multiple,graded=_multiple(),_graded()
         how=('Tick each sense a usage has' if multiple and not graded else

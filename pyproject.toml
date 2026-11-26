@@ -44,4 +44,4 @@ all = ["pytest"]
 include = ["semlens*", "app*"]
 
 [tool.setuptools.package-data]
-app = ["components/*.js", "data/*.csv"]
+app = ["components/*.js", "data/*.csv", "data/*.npz", "data/score_help/*.gif"]

@@ -8,5 +8,6 @@ headless = true
 base = "light"
 
 [client]
-# No "Deploy" button or developer menu: SemLens runs on the user's own computer.
-toolbarMode = "viewer"
+# No toolbar: no "Deploy" button and no menu. SemLens runs on the user's own computer;
+# the browser's own print remains. The empty bar it leaves is hidden in app/presentation.py.
+toolbarMode = "minimal"

@@ -16,8 +16,8 @@ def main() -> None:
     print(f"SemLens keeps saved corpora and analyses in {STORAGE}", flush=True)
     command = [sys.executable, "-m", "streamlit", "run", str(Path(__file__).with_name("app.py")),
                "--browser.gatherUsageStats", "false", "--theme.base", "light",
-               # No "Deploy" button or developer menu: SemLens runs on the user's own computer.
-               "--client.toolbarMode", "viewer", *sys.argv[1:]]
+               # No toolbar (no "Deploy" button, no menu): SemLens runs on the user's own computer.
+               "--client.toolbarMode", "minimal", *sys.argv[1:]]
     try:
         raise SystemExit(subprocess.call(command))
     except KeyboardInterrupt:

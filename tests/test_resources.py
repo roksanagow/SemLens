@@ -92,9 +92,12 @@ def test_comparisons_too_large_for_memory_are_not_computed(monkeypatch):
                  'corpus_order': data.corpus_labels, 'corpus_labels': data.corpus_labels, 'data_revision': 1}.items():
         at.session_state[k] = v
     at.session_state['workspace'] = 'Explore'
+    at.session_state['explore_view'] = 'Scores'
     at.run()
     assert not at.exception
     assert any('Comparing every pair of corpora' in e.value and 'Not started' in e.value for e in at.error)
+    at.session_state['explore_view'] = 'Compare two corpora'
+    at.run()
     # The pair comparison keeps its selectors, so another pair can be chosen, but computes nothing.
     assert any(e.value.startswith('**Not started') and 'Comparing a and b' in e.value for e in at.error)
     assert not at.metric

@@ -18,7 +18,11 @@ def apply_theme():
     placeholder='#6b7280' if dark else '#9ca3af'
     st.html(f'''<style>
     :root {{ --sl-bg:{bg}; --sl-surface:{surface}; --sl-text:{text}; --sl-border:{border}; }}
-    .stApp, [data-testid="stHeader"], [data-testid="stBottom"] {{ background:{bg}; color:{text}; color-scheme:{'dark' if dark else 'light'}; }}
+    .stApp, [data-testid="stBottom"] {{ background:{bg}; color:{text}; color-scheme:{'dark' if dark else 'light'}; }}
+    /* No bar across the top: the toolbar is off (toolbarMode "minimal"), and the empty header
+       would take a strip of the page. The button that reopens a closed sidebar stays visible. */
+    .stApp [data-testid="stHeader"] {{ background:transparent; height:0; }}
+    .stApp [data-testid="stMainBlockContainer"] {{ padding-top:2rem; }}
     [data-testid="stSidebar"] {{ background:{surface}; color:{text}; }}
     .stApp :is(h1,h2,h3,h4,h5,h6,p,label,small), .stApp [data-testid="stMetricValue"],
     .stApp [data-testid="stWidgetLabel"], .stApp summary {{ color:{text}; }}
@@ -72,6 +76,15 @@ def apply_theme():
         box-shadow:0 8px 24px {help_shadow},inset 0 1px 0 #ffffff10;
     }}
     [data-testid="stTooltipContent"], [data-testid="stTooltipContent"] :is(p,li,strong,em) {{ color:{text}; }}
+    /* Second-level tabs (Explore, Discover's Results): larger than body text, so that they read as places to go. */
+    [data-testid="stMain"] [data-testid="stTabs"] [role="tablist"] {{ gap:.4rem; border-bottom:1px solid {border}; }}
+    [data-testid="stMain"] [data-testid="stTabs"] button[role="tab"] {{ padding:.45rem .9rem; border-radius:8px 8px 0 0; }}
+    [data-testid="stMain"] [data-testid="stTabs"] button[role="tab"] p {{ font-size:1.05rem; font-weight:600; }}
+    [data-testid="stMain"] [data-testid="stTabs"] button[role="tab"][aria-selected="true"] {{ background:{surface}; }}
+    [data-testid="stMain"] [data-testid="stTabs"] button[role="tab"]:hover {{ background:{tab_hover}; }}
+    /* A score's help opens with its animation: room for the picture and the text below it, without scrolling. */
+    [data-testid="stTooltipContent"]:has(img) {{ max-height:min(82vh,720px); }}
+    [data-testid="stTooltipContent"] img {{ border-radius:6px; }}
     [data-testid="stTooltipContent"] a {{ color:{help_ink}; text-decoration:underline; }}
     @media (prefers-reduced-motion:reduce) {{
         .stApp [data-testid="stTooltipIcon"] button:not([data-testid]) {{ transition:none; }}
@@ -260,7 +273,7 @@ def concordance_html(lines):
                     f'<td class="semlens-kwic-left"><div>{html.escape(left)}</div></td>'
                     f'<td class="semlens-kwic-target"><mark>{html.escape(target)}</mark></td>'
                     f'<td class="semlens-kwic-right">{html.escape(right)}</td></tr>')
-    return ('<div class="semlens-pair-table semlens-kwic"><table aria-label="Concordance of loaded occurrences">'
+    return ('<div class="semlens-pair-table semlens-kwic"><table aria-label="Concordance of loaded usages">'
             '<colgroup><col style="width:130px"><col><col style="width:110px"><col></colgroup>'
             '<thead><tr><th scope="col">Corpus</th><th scope="col" style="text-align:right">Before</th>'
             '<th scope="col" style="text-align:center">Target</th><th scope="col">After</th></tr></thead>'

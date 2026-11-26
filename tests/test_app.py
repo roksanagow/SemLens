@@ -37,6 +37,12 @@ def plotted_points(at):
     return sum(len(trace.get('x',[])) for trace in fig['data'] if trace.get('name','').startswith('corpus_'))
 
 
+def open_tab(at,tab):
+    """Open one of Explore's tabs; only the open tab is drawn."""
+    at.session_state['explore_view']=tab
+    at.run()
+
+
 def pair_tables(at):
     return [el.proto.body for el in at.get('html') if '<div class="semlens-pair-table semlens-compact">' in el.proto.body]
 
@@ -46,12 +52,22 @@ def test_all_corpora_share_plot_and_single_corpus_has_no_change_scores(count):
     at,data=seeded_app(count)
     widget(at,'button_group','Workspace').set_value('Explore').run()
     assert not at.exception
-    assert plotted_points(at)==len(data)
+    assert [t.label for t in at.tabs]==['Map','Scores','Compare two corpora']
+    assert plotted_points(at)==len(data) and len(at.get('plotly_chart'))==1 and not at.metric
+    open_tab(at,'Scores')
+    # AMD is the headline; the other scores open under More scores.
+    assert not at.exception and len(at.get('plotly_chart'))==(0 if count==1 else 1)
+    if count>1:
+        assert any('differ most (AMD' in m.value for m in at.markdown)
+        at.session_state['more_scores']=True
+        at.run()
+        assert len(at.get('plotly_chart'))==4
+    open_tab(at,'Compare two corpora')
     assert len(at.metric)==(0 if count==1 else 6)
-    assert len(at.get('plotly_chart'))==(1 if count==1 else 5)
     if count>2:
         widget(at,'selectbox','From corpus').set_value('corpus_2').run()
         assert not at.exception
+        open_tab(at,'Map')
         assert plotted_points(at)==len(data)
         widget(at,'selectbox','Plot view').set_value('LDA').run()
         assert not at.exception
@@ -112,7 +128,7 @@ def test_distribution_lines_share_bins_and_preserve_counts_and_proportions():
     counts=json.loads(at.get('plotly_chart')[1].proto.spec)['data']
     for trace,size in zip(counts,[2,3,4]):
         assert sum(trace['y'])==size
-    assert list(at.dataframe[0].value['Occurrences'])==[2,3,4]
+    assert list(at.dataframe[0].value['Usages'])==[2,3,4]
 
 
 def test_distribution_bins_follow_the_observed_distances():
@@ -203,7 +219,7 @@ def test_fetched_definitions_can_be_edited_applied_and_kept_across_navigation(mo
     draft='  A place that holds money  \n\nA bank of switches\n'
     editor.set_value(draft).run()
     assert at.session_state['definitions_raw']==['sense 0','sense 1','sense 2']
-    widget(at,'button','Create definition space').click().run()
+    widget(at,'button','Create the definitions map').click().run()
     assert not at.exception and not at.error
     assert embedded==[['bank: A place that holds money','bank: A bank of switches']]
     assert at.session_state['definitions_raw']==['A place that holds money','A bank of switches']
@@ -248,16 +264,19 @@ def test_amd_evidence_and_repeated_sampling_are_optional():
     at,data=seeded_app(3)
     widget(at,'button_group','Workspace').set_value('Explore').run()
     at.session_state['full_pairs']=True
+    at.session_state['explore_view']='Compare two corpora'
     at.run()
     assert not at.exception
     assert len(pair_tables(at))==2
-    widget(at,'selectbox','Score sampling').set_value('Repeated equal-size samples')
+    widget(at,'selectbox','Score sampling').set_value('repeated')
     # AppTest does not yet serialise stateful expander frontend state.
     at.session_state['full_pairs']=True
+    at.session_state['explore_view']='Compare two corpora'
     at.run()
     assert not at.exception
     assert len(at.dataframe)==1
     assert len(pair_tables(at))==2
+    open_tab(at,'Map')
     assert plotted_points(at)==len(data)
 
 
@@ -265,10 +284,12 @@ def test_ranked_sentence_search_and_independently_scrollable_cells():
     at,_=seeded_app(2)
     widget(at,'button_group','Workspace').set_value('Explore').run()
     at.session_state['full_pairs']=True
+    at.session_state['explore_view']='Compare two corpora'
     at.run()
     assert not at.exception
     widget(at,'text_input','Find a sentence').set_value('example 0.')
     at.session_state['full_pairs']=True
+    at.session_state['explore_view']='Compare two corpora'
     at.run()
     assert not at.exception
     assert pair_tables(at)
@@ -310,8 +331,8 @@ def test_annotation_sense_buttons_and_default_click_selection():
     at,_=seeded_app(2)
     widget(at,'button_group','Workspace').set_value('Annotation').run()
     for sense in ['finance','river']:
-        widget(at,'text_input','New sense class').set_value(sense)
-        widget(at,'button','Add class').click().run()
+        widget(at,'text_input','New sense').set_value(sense)
+        widget(at,'button','Add sense').click().run()
         assert not at.exception
         assert widget(at,'button',f'✓ {sense}')
     widget(at,'button','finance').click().run()
@@ -507,9 +528,9 @@ def test_annotation_review_excludes_unannotated_by_default():
                                           'active_sense_class':'finance','history':[]}
     widget(at,'button_group','Workspace').set_value('Annotation').run()
     assert not at.exception
-    assert widget(at,'checkbox','Include unannotated occurrences').value is False
+    assert widget(at,'checkbox','Include unannotated usages').value is False
     assert len(at.dataframe[-1].value)==1
-    widget(at,'checkbox','Include unannotated occurrences').check().run()
+    widget(at,'checkbox','Include unannotated usages').check().run()
     assert len(at.dataframe[-1].value)==len(data)
 
 
@@ -541,6 +562,9 @@ def test_manage_saved_files_rename_collision_cancel_and_delete(tmp_path,monkeypa
     widget(at,'selectbox','Data source').set_value(mode).run()
     widget(at,'selectbox','Saved locally').set_value(original).run()
     widget(at,'button',open_label).click().run()
+    # The open analysis has definitions that are not saved: SemLens asks first.
+    assert any('Not saved yet: 3 definitions' in w.value for w in at.warning)
+    widget(at,'button','Continue without saving').click().run()
     assert not at.exception
     widget(at,'text_input','New name').set_value('other')
     widget(at,'button','Rename').click().run()
@@ -572,7 +596,7 @@ def test_manage_saved_files_rename_collision_cancel_and_delete(tmp_path,monkeypa
     widget(at,'button','Delete saved file…').click().run()
     widget(at,'button','Confirm deletion').click().run()
     assert not at.exception and not list((tmp_path/scope).glob('*.semlens'))
-    assert any('saved locally yet' in message.value for message in at.info)
+    assert any('saved on this computer yet' in message.value for message in at.caption)
 
 
 def test_open_edit_and_save_analysis_uses_current_name_and_protects_other_files(tmp_path,monkeypatch):
@@ -588,6 +612,7 @@ def test_open_edit_and_save_analysis_uses_current_name_and_protects_other_files(
     widget(at,'selectbox','Data source').set_value('Saved analysis').run()
     widget(at,'selectbox','Saved locally').set_value(original).run()
     widget(at,'button','Open saved analysis').click().run()
+    widget(at,'button','Continue without saving').click().run()
     assert widget(at,'text_input','Analysis name').value=='Original study'
     at.session_state['_annotation_store']={'annotations':{0:'finance'},'sense_classes':['finance'],
                                           'active_sense_class':'finance','history':[]}
@@ -682,7 +707,7 @@ def test_blind_annotation_hides_corpus_colour_and_hover_but_keeps_legend():
     at,data=seeded_app(3)
     at.session_state['hidden_corpora']=['corpus_2']
     widget(at,'button_group','Workspace').set_value('Annotation').run()
-    assert 'LDA' in widget(at,'selectbox','Plot view').options
+    assert 'What separates the corpora (LDA)' in widget(at,'selectbox','Plot view').options
     def corpus_traces():
         return [t for t in scatter_figure(at)['data'] if (t.get('meta') or {}).get('semlens_corpus')]
     assert len({t['marker']['color'] for t in corpus_traces()})==3
@@ -697,7 +722,7 @@ def test_blind_annotation_hides_corpus_colour_and_hover_but_keeps_legend():
     assert traces[2]['visible']=='legendonly'
     # LDA arranges usages by corpus, so it is withdrawn while blind.
     view=widget(at,'selectbox','Plot view')
-    assert 'LDA' not in view.options and view.value=='PCA'
+    assert not any('LDA' in option for option in view.options) and view.value=='PCA'
     assert sum(len(t['x']) for t in traces)==len(data)
 
 
@@ -705,6 +730,7 @@ def test_inspector_chooses_pair_and_finds_closest_usages_in_other_corpora():
     at,data=seeded_app(3)
     widget(at,'button_group','Workspace').set_value('Explore').run()
     at.session_state['full_pairs']=True
+    at.session_state['explore_view']='Compare two corpora'
     at.run()
     assert not at.exception
     assert widget(at,'selectbox','Inspect usages from').value=='corpus_0'
@@ -712,6 +738,7 @@ def test_inspector_chooses_pair_and_finds_closest_usages_in_other_corpora():
     # Choosing the pair inside the panel moves the comparison above with it.
     widget(at,'selectbox','Closest counterparts in').set_value('corpus_2')
     at.session_state['full_pairs']=True
+    at.session_state['explore_view']='Compare two corpora'
     at.run()
     assert not at.exception
     assert widget(at,'selectbox','To corpus').value=='corpus_2'
@@ -719,17 +746,20 @@ def test_inspector_chooses_pair_and_finds_closest_usages_in_other_corpora():
     # Picking the other side's corpus swaps the pair instead of failing.
     widget(at,'selectbox','Inspect usages from').set_value('corpus_2')
     at.session_state['full_pairs']=True
+    at.session_state['explore_view']='Compare two corpora'
     at.run()
     assert not at.exception
     assert (widget(at,'selectbox','From corpus').value,widget(at,'selectbox','To corpus').value)==('corpus_2','corpus_0')
     assert len(pair_tables(at))==2
     widget(at,'radio','Show').set_value('Closest usages to a chosen sentence')
     at.session_state['full_pairs']=True
+    at.session_state['explore_view']='Compare two corpora'
     at.run()
     assert not at.exception
     widget(at,'text_input','Find the sentence to look up').set_value('example 5.')
     widget(at,'number_input','Closest per corpus').set_value(2)
     at.session_state['full_pairs']=True
+    at.session_state['explore_view']='Compare two corpora'
     at.run()
     assert not at.exception
     table=next(el.proto.body for el in at.get('html') if 'semlens-nearest-table' in el.proto.body)
@@ -752,17 +782,17 @@ def test_occurrence_cap_accepts_all_or_a_positive_number():
             _parse_cap(text)
     at=AppTest.from_file('app/app.py',default_timeout=30).run()
     widget(at,'selectbox','Data source').set_value('Paste sentences').run()
-    assert widget(at,'text_input','Maximum occurrences per corpus').value=='all'
+    assert widget(at,'text_input','Maximum usages per corpus').value=='all'
     widget(at,'text_input','Target word').set_value('bank')
     at.text_area[0].set_value('\n'.join(f'The bank had example {i}.' for i in range(6)))
     at.text_area[1].set_value('\n'.join(f'A bank closed in case {i}.' for i in range(4)))
     widget(at,'button','Load usages').click().run()
     assert len(at.session_state['target_word_data'])==10
-    widget(at,'text_input','Maximum occurrences per corpus').set_value('3')
+    widget(at,'text_input','Maximum usages per corpus').set_value('3')
     widget(at,'button','Load usages').click().run()
     data=at.session_state['target_word_data']
     assert [len(data.indices_for_corpus(c)) for c in data.corpus_labels]==[3,3]
-    widget(at,'text_input','Maximum occurrences per corpus').set_value('lots')
+    widget(at,'text_input','Maximum usages per corpus').set_value('lots')
     widget(at,'button','Load usages').click().run()
     assert any('positive whole number' in e.value for e in at.error)
     assert len(at.session_state['target_word_data'])==6
@@ -796,9 +826,10 @@ def test_sidebar_shows_new_data_immediately_and_keeps_the_load_message():
     at.text_area[1].set_value('No target here.')
     widget(at,'button','Load usages').click().run()
     assert not at.exception
-    assert any('**bank** · 2 occurrences' in m.value for m in at.sidebar.markdown)
-    assert any(m.label=='Corpus order' for m in at.sidebar.multiselect)
-    assert any('Loaded 2 occurrences from 1 corpora' in m.value for m in at.success)
+    assert any('**bank** · 2 usages' in m.value for m in at.sidebar.markdown)
+    # Corpus order is an advanced setting in Data & Model.
+    assert any(m.label=='Corpus order' for m in at.multiselect)
+    assert any('Loaded 2 usages from 1 corpus. Next: embed them, below.' in m.value for m in at.success)
     assert any('No selected forms found in: corpus_2' in m.value for m in at.warning)
     at.run()
     assert not at.success and not at.warning
@@ -931,6 +962,7 @@ def test_target_is_highlighted_in_evidence_tables():
     at,_=seeded_app(2)
     widget(at,'button_group','Workspace').set_value('Explore').run()
     at.session_state['full_pairs']=True
+    at.session_state['explore_view']='Compare two corpora'
     at.run()
     assert all(table.count('<mark>bank</mark>')==2*table.count('<tr><td>') for table in pair_tables(at))
 
@@ -938,31 +970,40 @@ def test_target_is_highlighted_in_evidence_tables():
 def test_change_over_time_and_scores_follow_chronology_and_legend():
     at,_=seeded_app(5)
     widget(at,'button_group','Workspace').set_value('Explore').run()
-    assert len(at.get('plotly_chart'))==5
+    open_tab(at,'Scores')
+    assert len(at.get('plotly_chart'))==1 and 'Over time' not in [t.label for t in at.tabs]
     at.session_state['chronological']=True
-    at.run()
+    open_tab(at,'Over time')
     assert not at.exception
     charts=[json.loads(c.proto.spec) for c in at.get('plotly_chart')]
-    assert len(charts)==6
-    trend=charts[5]['data']
-    assert len(trend)==8 and trend[0]['x']==['corpus_1','corpus_2','corpus_3','corpus_4']
+    assert len(charts)==1
+    trend=charts[0]['data']
+    assert len(trend)==2 and trend[0]['x']==['corpus_1','corpus_2','corpus_3','corpus_4']
     from app.common import cached_comparison
     vectors=at.session_state['embedded_usages'].embeddings.numpy()
-    def apd(a,b):
-        return cached_comparison(vectors[a*4:a*4+4],vectors[b*4:b*4+4],(f'corpus_{a}',f'corpus_{b}'),'cosine','balanced',20,42).summary.loc['apd','mean']
-    assert trend[0]['y']==pytest.approx([apd(0,1),apd(1,2),apd(2,3),apd(3,4)])
-    assert trend[1]['y']==pytest.approx([apd(0,1),apd(0,2),apd(0,3),apd(0,4)])
+    def score(a,b,metric='amd'):
+        return cached_comparison(vectors[a*4:a*4+4],vectors[b*4:b*4+4],(f'corpus_{a}',f'corpus_{b}'),'cosine','balanced',20,42).summary.loc[metric,'mean']
+    apd=score
+    assert trend[0]['y']==pytest.approx([score(0,1),score(1,2),score(2,3),score(3,4)])
+    assert trend[1]['y']==pytest.approx([score(0,1),score(0,2),score(0,3),score(0,4)])
+    # The other scores, under More scores.
+    at.session_state['more_time_scores']=True
+    at.run()
+    more=json.loads(at.get('plotly_chart')[1].proto.spec)['data']
+    assert len(more)==6 and more[0]['y']==pytest.approx([score(0,1,'apd'),score(1,2,'apd'),score(2,3,'apd'),score(3,4,'apd')])
     # Corpora switched off in the legend drop out of the heatmaps and the trend.
     at.session_state['hidden_corpora']=['corpus_1','corpus_3']
     at.run()
     charts=[json.loads(c.proto.spec) for c in at.get('plotly_chart')]
-    assert charts[1]['layout']['xaxis']['ticktext']==['corpus_0','corpus_2','corpus_4']
-    assert charts[1]['layout']['title']['text']=='Average pairwise distance (APD)'
-    assert charts[5]['data'][0]['y']==pytest.approx([apd(0,2),apd(2,4)])
+    assert charts[0]['data'][0]['y']==pytest.approx([apd(0,2),apd(2,4)])
+    open_tab(at,'Scores')
+    charts=[json.loads(c.proto.spec) for c in at.get('plotly_chart')]
+    assert charts[0]['layout']['xaxis']['ticktext']==['corpus_0','corpus_2','corpus_4']
+    assert charts[0]['layout']['title']['text']=='Average minimum distance (AMD)'
     assert any('Showing 3 of 5 corpora' in c.value for c in at.caption)
     at.session_state['hidden_corpora']=['corpus_0','corpus_1','corpus_2','corpus_3']
     at.run()
-    assert not at.exception and len(at.get('plotly_chart'))==1
+    assert not at.exception and not at.get('plotly_chart')
     assert any('at least two corpora' in m.value for m in at.info)
 
 
@@ -976,6 +1017,7 @@ def test_pca_axes_report_their_share_of_the_variation_and_help_explains_views():
     assert layout['yaxis']['title']['text']==f'PC2 · {ratios[1]:.0%} of the variation'
     help_text=widget(at,'selectbox','Plot view').help
     assert all(term in help_text for term in ['principal component analysis','UMAP','t-SNE','linear discriminant analysis'])
+    open_tab(at,'Compare two corpora')
     amd=next(m for m in at.metric if m.label=='AMD')
     assert 'Average minimum distance (AMD)' in amd.help and r'\min_{b\in B}d(a,b)' in amd.help
 
@@ -1065,7 +1107,8 @@ def test_plot_options_set_components_and_projection_settings(monkeypatch):
     common.cached_projection.clear()
     widget(at,'selectbox','Plot view').set_value('UMAP').run()
     assert calls[-1]==('umap',{'n_neighbors':11,'min_dist':.1,'random_state':42,'metric':'cosine'})
-    widget(at,'selectbox','Vector distance').set_value('euclidean')
+    # The vector distance is set with the scores (Score settings); UMAP uses it too.
+    at.session_state['distance_metric']='euclidean'
     widget(at,'number_input','Neighbours').set_value(5)
     widget(at,'number_input','Seed').set_value(7).run()
     assert calls[-1]==('umap',{'n_neighbors':5,'min_dist':.1,'random_state':7,'metric':'euclidean'})
@@ -1077,6 +1120,7 @@ def test_plot_options_set_components_and_projection_settings(monkeypatch):
     ring=next(t for t in scatter_figure(at)['data'] if t['name'].startswith('Contains'))
     assert len(ring['x'])==1
     assert any(b.label=='Download plot data (CSV)' for b in at.get('download_button'))
+    open_tab(at,'Scores')
     assert any(b.label=='Download scores for all corpus pairs (CSV)' for b in at.get('download_button'))
 
 
@@ -1094,6 +1138,7 @@ def test_display_settings_change_points_palette_and_order():
     assert [t['marker']['color'] for t in traces]==palette_for(SEQUENTIAL_PALETTE,3)
     widget(at,'radio','Save figures as').set_value('svg').run()
     assert json.loads(at.get('plotly_chart')[0].proto.config)['toImageButtonOptions']['format']=='svg'
+    widget(at,'button_group','Workspace').set_value('Data & Model').run()
     widget(at,'button','Order by name').click().run()
     assert at.session_state['corpus_order']==['corpus_0','corpus_1','corpus_2']
     from app.common import natural_sort_key
@@ -1110,7 +1155,7 @@ def test_annotation_tools_rename_import_and_show_remaining(monkeypatch):
     widget(at,'button_group','Workspace').set_value('Annotation').run()
     assert not at.exception
     # Renaming onto an existing class merges the two, and can be undone.
-    widget(at,'selectbox','Class to rename').set_value('money')
+    widget(at,'selectbox','Sense to rename').set_value('money')
     widget(at,'text_input','New name').set_value('finance')
     widget(at,'button','Rename').click().run()
     assert not at.exception
@@ -1123,7 +1168,7 @@ def test_annotation_tools_rename_import_and_show_remaining(monkeypatch):
     assert sum(len(t['x']) for t in fig['data'] if (t.get('meta') or {}).get('semlens_corpus'))==len(data)-3
     assert not any(t['name'].startswith('⬡') for t in fig['data'])
     assert sorted(next(t for t in fig['data'] if t['name']=='_hit_area')['customdata'])==[2,3,4,6,7]
-    # Importing matches by usage_id or by sentence position, and adds new classes.
+    # Importing matches by usage_id or by sentence position, and adds new senses.
     fake=SimpleNamespace(session_state={'_annotation_store':{'annotations':{0:'finance'},'sense_classes':['finance'],'active_sense_class':'finance','history':[]}})
     monkeypatch.setattr(store,'st',fake)
     table=pd.DataFrame([{'usage_id':data.usages[2].usage_id,'sentence':'','corpus':'','start':'','end':'','sense':'river'},

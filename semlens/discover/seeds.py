@@ -77,7 +77,7 @@ def seed_usages_from_table(text: str, *, forms: list[str] | None = None, delimit
     has_span = "start" in columns and "end" in columns
     pattern = usage_search_pattern(",".join(forms)) if forms else None
     if not has_span and pattern is None:
-        raise ValueError("The table has no start and end columns: give the seed word, so its occurrences can be found.")
+        raise ValueError("The table has no start and end columns: give the seed word, so its usages can be found.")
     found = []
     for number, row in enumerate(rows, start=2):
         sentence = (row.get(columns["sentence"]) or "").strip("\n")
@@ -96,7 +96,7 @@ def seed_usages_from_table(text: str, *, forms: list[str] | None = None, delimit
             for match in pattern.finditer(sentence):
                 found.append(SeedUsage(sentence, match.start(), match.end(), corpus, source))
     if not found:
-        raise ValueError("No seed occurrences were found in the table.")
+        raise ValueError("No seed usages were found in the table.")
     return list(dict.fromkeys(found))
 
 

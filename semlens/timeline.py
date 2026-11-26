@@ -98,6 +98,14 @@ def time_from_corpus_name(name: str) -> float | None:
         return None
 
 
+def year_order(names: Sequence[str]) -> list[str] | None:
+    """The names in time order when every one is a year or a range of years (1999, 1999–2003); otherwise None."""
+    times = [time_from_corpus_name(str(name)) for name in names]
+    if len(names) < 2 or any(t is None for t in times):
+        return None
+    return [name for _, name in sorted(zip(times, names), key=lambda pair: pair[0])]
+
+
 def _whole(values: Sequence[float]) -> bool:
     return all(float(v).is_integer() for v in values)
 

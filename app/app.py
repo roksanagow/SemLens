@@ -9,14 +9,17 @@ sys.path.insert(0,str(Path(__file__).resolve().parent.parent))
 import streamlit as st
 from semlens.utils import palette_names
 from app.state import init_state
-from app.common import SAMPLING_HELP,GLOSSARY,natural_sort_key
-from app.ui_data import render_data,render_save_analysis
+from app.common import GLOSSARY,ADVANCED_HELP
+from app.ui_data import render_data,render_save_analysis,show_load_notices
 from app.ui_explore import render_full_space
 from app.ui_definitions import render_definitions
 from app.ui_annotations import render_annotations
 from app.presentation import apply_theme,page_tabs
 from app.components.corpus_visibility import sync_corpus_visibility
 from app.preferences import apply_preferences,render_preferences_note,save_preferences
+from app.autosave import autosave
+from app.guidance import (open_start_page_once,open_start_page,close_start_page,start_page_open,render_start_page,
+                          render_analysis_status,render_recovery_offer,PAGES)
 
 SECTIONS=['Analyse a word','Discover related words']
 
@@ -27,20 +30,42 @@ init_state()
 st.session_state.setdefault('section',SECTIONS[0])
 # The workspace is drawn only in Analyse a word: re-saved every run, so that a
 # visit to Discover does not reset it (Streamlit forgets the value of a widget that is not drawn).
-if 'workspace' in st.session_state:
-    st.session_state.workspace=st.session_state.workspace
+# The same for the open second-level tab of Explore and of Discover's Results.
+for kept in ('workspace','explore_view','dv_results_view'):
+    if kept in st.session_state:
+        st.session_state[kept]=st.session_state[kept]
 from app.discover import keep_settings as keep_discover_settings
 keep_discover_settings()
+open_start_page_once()
 save_preferences()
+
+
+def finish_run():
+    """Keep the open work and the settings. Called at the end of every run that is not interrupted."""
+    autosave()
+    save_preferences()
+
+
 with st.sidebar:
     st.title('🔍 SemLens')
     st.caption('Explore meaning across corpora')
-    section=st.radio('Section',SECTIONS,key='section',
+    st.button('Start page',icon=':material/home:',type='tertiary',on_click=open_start_page,key='open_start_page',
+              help='What SemLens does, and where to start: the example, your own texts or saved work.')
+    section=st.radio('Section',SECTIONS,key='section',on_change=close_start_page,
                      help='**Analyse a word**: how one word, or a few, are used in each corpus.\n\n'
                           '**Discover related words**: find the words used like a set of seed words or seed usages, in each corpus, '
                           'then open the ones you choose in Analyse a word.')
     st.radio('Theme',['Light','Dark'],horizontal=True,key='theme_mode')
+    if not start_page_open():
+        st.toggle('Advanced options',key='advanced_options',help=ADVANCED_HELP)
     apply_theme()
+
+if start_page_open():
+    with st.sidebar:
+        render_preferences_note()
+    render_start_page()
+    finish_run()
+    st.stop()
 
 if section=='Discover related words':
     from app.discover import render_discover,render_discover_sidebar
@@ -48,16 +73,16 @@ if section=='Discover related words':
         render_discover_sidebar()
         render_preferences_note()
     render_discover()
-    save_preferences()
+    finish_run()
     st.stop()
 
 with st.sidebar:
     data=st.session_state.target_word_data
     if data is not None:
-        st.write(f'**{data.word}** · {len(data):,} occurrences')
+        st.write(f'**{data.word}** · {len(data):,} usages')
         for corpus in st.session_state.corpus_order:
             st.caption(f'{corpus}: {len(data.indices_for_corpus(corpus)):,}')
-    with st.expander('Display & comparison settings'):
+    with st.expander('Display settings'):
         revision=st.session_state.data_revision
         if data is not None and len(data.forms)>1:
             st.session_state['_words_mode_sidebar']=st.session_state.words_mode
@@ -69,39 +94,10 @@ with st.sidebar:
         st.session_state.palette_name=st.selectbox('Colour palette',palettes,index=palettes.index(st.session_state.palette_name),key=f'palette_{revision}',
             help='Colours for the corpora. The palettes marked colourblind are safe for the common forms of colour blindness. '
                  'The sequential palette runs from dark to light in corpus order, which suits corpora that follow one another in time.')
-        distances=['cosine','euclidean']
-        st.session_state.distance_metric=st.selectbox('Vector distance',distances,index=distances.index(st.session_state.distance_metric),key=f'distance_{revision}',
-            help='Used to compare full embedding or definition-space vectors. Individual definition dimensions always use absolute distance.')
-        modes={'Equal sizes':'balanced','All occurrences (unequal sizes allowed)':'unequal','Repeated equal-size samples':'repeated'}
-        default=list(modes.values()).index(st.session_state.sampling_mode)
-        chosen=st.selectbox('Score sampling',list(modes),index=default,help=SAMPLING_HELP,key=f'sampling_{revision}')
-        st.session_state.sampling_mode=modes[chosen]
-        if modes[chosen]=='repeated':
-            st.session_state.sampling_repetitions=int(st.number_input('Repetitions',min_value=2,max_value=100,value=st.session_state.sampling_repetitions,key=f'reps_{revision}'))
-        st.session_state.sampling_seed=int(st.number_input('Sampling seed',min_value=0,value=st.session_state.sampling_seed,key=f'seed_{revision}',
-            help='Fixes which usages are drawn when samples are taken, so that scores can be reproduced. Any whole number will do.'))
         st.slider('Point size',min_value=4,max_value=18,key='point_size',help='Larger points are easier to see on a projector; smaller ones suit crowded plots.')
         st.slider('Point opacity',min_value=0.2,max_value=1.0,step=0.1,key='point_opacity',help='Lower values let overlapping points show through.')
         st.radio('Save figures as',['png','svg'],format_func=str.upper,horizontal=True,key='figure_format',
                  help='The format used by the camera button on each plot. SVG scales without blurring, for papers and posters; PNG is saved at double size, for slides.')
-        if data is not None:
-            with st.form(f'order_form_{revision}'):
-                chronology=st.checkbox('Corpora have chronological order',value=st.session_state.chronological)
-                order=st.multiselect('Corpus order',data.corpus_labels,default=st.session_state.corpus_order,
-                                     help='Remove and re-add names to reorder them. Keep every corpus selected.')
-                apply=st.form_submit_button('Apply corpus order')
-                by_name=st.form_submit_button('Order by name',help='Sorts the corpora by name, with numbers in numeric order, so that names beginning with a year fall into time order.')
-                if by_name:
-                    st.session_state.corpus_order=sorted(data.corpus_labels,key=natural_sort_key)
-                    st.session_state.chronological=chronology
-                    st.rerun()
-                if apply:
-                    if len(order)==len(data.corpus_labels):
-                        st.session_state.corpus_order=order
-                        st.session_state.chronological=chronology
-                        st.rerun()
-                    else:
-                        st.error('Include all corpora in the order.')
     st.caption('All corpora share the plots. Score comparisons have their own corpus selectors.')
     with st.expander('Glossary'):
         st.markdown(GLOSSARY)
@@ -109,9 +105,18 @@ with st.sidebar:
     # Before any plot is drawn: apply a corpus switched on or off in a plot legend.
     sync_corpus_visibility()
 
+def go_to_page(destination):
+    st.session_state.workspace=destination
+
+
 # Render one workspace at a time: annotation actions do not recompute hidden plots.
-pages=['Data & Model','Explore','Definitions','Annotation']
+pages=PAGES
 page=page_tabs('Workspace',pages,'workspace')
+render_analysis_status(page,go_to_page)
+if page!='Data & Model':
+    # Data & Model shows them under its load buttons, where the user just clicked.
+    show_load_notices()
+render_recovery_offer()
 if page=='Data & Model':
     render_data()
 elif page=='Explore':
@@ -123,12 +128,9 @@ else:
 
 render_save_analysis()
 
-def go_to_page(destination):
-    st.session_state.workspace=destination
-
 destination=pages[(pages.index(page)+1)%len(pages)]
 label=f'Continue to {destination}' if page!=pages[-1] else 'Return to Data & Model'
 with st.container(horizontal=True,horizontal_alignment='right',key='page_continue'):
     st.button(label,icon=':material/arrow_forward:',on_click=go_to_page,args=(destination,))
 
-save_preferences()
+finish_run()

@@ -11,6 +11,7 @@ from semlens.definitions import format_definitions,fetch_wiktionary_entries,embe
 from semlens.spaces import project_to_definition_space
 from semlens.embeddings import mark_target
 from app.common import get_model
+from app.costs import model_is_downloaded
 from app.state import reset_downstream_of
 from app.ui_explore import render_plot,render_comparison,render_definition_distribution
 from app.grouping import current_view,render_grouping_controls,words_active
@@ -61,7 +62,7 @@ def definition_heatmap(matrix,labels,title):
 
 
 def render_definitions():
-    st.header('Definitions & definition space')
+    st.header('Definitions')
     st.caption('Write the senses you expect the word to have as short definitions, one per line, or fetch them from a dictionary and edit them. '
                'The language model reads each definition, and every usage is then described by how far it is from each one. '
                'The definitions are your hypotheses: change them and create the space again as often as you like.')
@@ -129,7 +130,7 @@ def render_definitions():
         if fetched is None and legacy and legacy[0]==data.word:
             fetched=legacy[1]
         raw=_edit_definitions(origin,fetched,replace=replace)
-        st.caption('Edit, add or remove definitions, then click Create definition space to apply them. Fetching again replaces this draft.')
+        st.caption('Edit, add or remove definitions, then click **Create the definitions map** to apply them. Fetching again replaces this draft.')
     else:
         upload=st.file_uploader('Definitions JSON',type=['json'])
         if upload:
@@ -142,7 +143,7 @@ def render_definitions():
                     st.info(f'No definitions found for {data.word}.')
                 origin=('json',data.word,hashlib.sha256(upload.getvalue()).hexdigest())
                 raw=_edit_definitions(origin,raw)
-                st.caption('Edit, add or remove definitions, then click Create definition space to apply them.')
+                st.caption('Edit, add or remove definitions, then click **Create the definitions map** to apply them.')
             except Exception as exc:
                 st.error(str(exc))
                 raw=[]
@@ -177,7 +178,14 @@ def render_definitions():
                     st.caption('The usages were embedded with XL-LEXEME target markers, so the word added by the template is marked in the same way. A word inside the definition text is never marked.')
             except ValueError as exc:
                 st.info(str(exc))
-    if st.button('Create definition space',type='primary'):
+    current=st.session_state.definitions_raw
+    if st.session_state.def_space_all is not None and raw and raw!=current:
+        st.caption(f'Creating the map replaces the {len(current)} definition{"s" if len(current)!=1 else ""} in use now. '
+                   'Annotations and senses are not affected.')
+    if model_id and not model_is_downloaded(model_id):
+        st.caption(f'Creating the map reads the definitions with {model_id}, which is downloaded first (once).')
+    if st.button('Create the definitions map',type='primary',
+                 help='The definitions map (definition space) places every usage by its distance to each definition: which of your senses is it nearest?'):
         try:
             if not raw:
                 raise ValueError('Add at least one definition.')
@@ -206,7 +214,7 @@ def render_definitions():
     if space is None:
         return
     if raw!=st.session_state.definitions_raw:
-        st.caption('The plots use the last created definition space. Click Create definition space to apply your edits.')
+        st.caption('The plots use the last definitions map. Click **Create the definitions map** to apply your edits.')
     labels=[s.split(': ',1)[-1] if ': ' in s else s for s in st.session_state.definitions_formatted]
     st.divider()
     st.caption('Each coordinate is cosine distance to a definition. Smaller values mean closer to that definition.')

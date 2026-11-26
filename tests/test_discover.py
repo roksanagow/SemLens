@@ -1,6 +1,7 @@
 """Discover: counting and sampling, contextual vectors on disk, kNN scoring, and the static first pass."""
 import json
 from collections import Counter
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -41,7 +42,7 @@ def test_the_cap_samples_evenly_through_the_corpus():
     # The same seed gives the same sample.
     assert np.array_equal(sample_occurrences(contexts, cap=100, min_count=1, seed=1).context, sample.context)
     summary = sample.summary()
-    assert int(summary.loc[0, 'Occurrences left out by the cap']) == sum(sample.counts['c'].values()) - len(sample)
+    assert int(summary.loc[0, 'Usages left out by the cap']) == sum(sample.counts['c'].values()) - len(sample)
 
 
 class ArrayCandidates:
@@ -388,37 +389,39 @@ def test_discover_runs_from_corpora_to_a_semlens_analysis(encoder, tmp_path, mon
     click('Embed and start exploring')
     assert not at.exception and at.session_state['dv_step'] == 'Results'
     assert (tmp_path / 'discover').is_dir() and len(discover.list_discoveries(tmp_path / 'discover')) == 1
-    click('Find related words')
+    click('Rank the words')
     ranked = at.dataframe[0].value.Word.tolist()
     assert 'bubble' not in ranked and {'cocoon', 'silo'} <= set(ranked)
     # The map of usages, with the seeds ringed; then UMAP; then words as the average of their usages.
-    at.session_state['dv_results_map'] = True
+    assert [tab.label for tab in at.tabs] == ['Ranking', 'Map', 'Read usages', 'Save & open in SemLens']
+    at.session_state['dv_results_view'] = 'Map'
     at.run()
     usage_map = json.loads(at.get('plotly_chart')[-1].proto.spec)
     names = [trace.get('name') for trace in usage_map['data']]
     assert not at.exception and 'Seeds' in names and 'bubble' in names
-    # AppTest does not keep a panel's open state between runs: open it again before each.
-    at.radio(key='dv_usage_map_view').set_value('UMAP')
-    at.session_state['dv_results_map'] = True
-    at.run()
+    at.radio(key='dv_usage_map_view').set_value('UMAP').run()
     assert not at.exception and json.loads(at.get('plotly_chart')[-1].proto.spec)['layout']['xaxis']['title']['text'] == 'UMAP 1'
-    at.radio(key='dv_map_points').set_value('words')
-    at.session_state['dv_results_map'] = True
-    at.run()
+    at.radio(key='dv_map_points').set_value('words').run()
     words_map = json.loads(at.get('plotly_chart')[-1].proto.spec)
     assert not at.exception and 'bubble' in {w for trace in words_map['data'] for w in (trace.get('text') or [])}
-    at.session_state['dv_results_map'] = False
+    at.session_state['dv_results_view'] = 'Read usages'
     at.run()
-    at.radio(key='dv_add_marked').set_value('add').run()
+    at.toggle(key='dv_add_marked').set_value(True).run()
     at.selectbox(key='dv_inspect_word').set_value('cocoon').run()
     at.button_group(key='dv_status_cocoon').set_value('accepted').run()
     update = next(b.label for b in at.button if b.label.startswith('Update the results with'))
     click(update)
+    at.session_state['dv_results_view'] = 'Ranking'
+    at.run()
     assert not at.exception and 'cocoon' not in at.dataframe[0].value.Word.tolist()
     # The next discovery is offered a name of its own.
     assert at.session_state['dv_name'].endswith(' 2')
     reopened = discover.Discovery.load(discover.list_discoveries(tmp_path / 'discover')[0]['folder'])
     assert reopened.word_status == {'cocoon': 'accepted'} and reopened.add_marked is True and reopened.seed_words == ['bubble']
+    at.session_state['dv_results_view'] = 'Save & open in SemLens'
+    at.run()
+    downloads = [b.label for b in at.get('download_button')]
+    assert 'Every score (CSV)' in downloads and any(label.startswith('Word decisions (CSV)') for label in downloads)
     assert at.multiselect(key='dv_handoff_words').value == ['bubble', 'cocoon']
     click('Open in Analyse a word')
     assert not at.exception
@@ -521,3 +524,68 @@ def test_handing_off_words_absent_from_the_chosen_corpora_says_so():
     sample = sample_occurrences(contexts_from_texts({'a': 'A bubble here.', 'b': 'A silo there.'}), cap=5, min_count=1)
     with pytest.raises(ValueError, match='No sentences containing'):
         handoff_sentences(sample, ['silo'], corpora=['a'])
+
+
+def test_one_click_marks_with_the_last_ticked_column_winning():
+    from app.discover import new_mark
+    assert new_mark(None, True, False) is True and new_mark(None, False, True) is False and new_mark(True, False, False) is None
+    # Both ticked: the box ticked just now decides.
+    assert new_mark(True, True, True) is False and new_mark(False, True, True) is True
+
+
+def test_the_simple_path_samples_embeds_and_ranks_in_one_go(encoder, tmp_path, monkeypatch):
+    import app.discover as discover
+    from streamlit.testing.v1 import AppTest
+    monkeypatch.setattr(discover, 'DISCOVER_ROOT', tmp_path / 'discover')
+    def corpus(words):
+        return ' '.join(f'They live in a {words[i % len(words)]} of friends, number {i}. The bank raised rates in month {i}.' for i in range(30))
+    at = AppTest.from_file('app/app.py', default_timeout=120)
+    at.session_state['source_texts'] = {'old': corpus(['bubble', 'cocoon']), 'new': corpus(['bubble', 'silo'])}
+    at.session_state['_loaded_model'] = encoder
+    # Step 4's remembered settings: the small test model, and a lower minimum for these small corpora.
+    at.session_state['dv_model_preset'] = 'Another model…'
+    at.session_state['dv_model_other'] = 'google/bert_uncased_L-2_H-128_A-2'
+    at.session_state['dv_min_count'] = 2
+    at.run()
+    at.sidebar.radio(key='section').set_value('Discover related words').run()
+    at.selectbox(key='dv_source_choice').set_value('Texts loaded in Analyse a word').run()
+    at.button[[b.label for b in at.button].index('Read the corpora')].click().run()
+    at.button_group(key='dv_step').set_value('Seeds').run()
+    at.text_input(key='dv_seed_words_input').set_value('bubble').run()
+    assert any(m.value.startswith('**The simple path') for m in at.markdown)
+    at.button(key='dv_quick_go').click().run()
+    assert not at.exception and not at.error, [e.value for e in at.error]
+    assert at.session_state['dv_step'] == 'Results' and len(discover.list_discoveries(tmp_path / 'discover')) == 1
+    assert at.session_state['_dv_scoring'] is not None
+    ranked = at.dataframe[0].value.Word.tolist()
+    assert {'cocoon', 'silo'} & set(ranked)
+    # The ranking is saved with the discovery: reopened in a new session, it shows at once.
+    folder = Path(discover.list_discoveries(tmp_path / 'discover')[0]['folder'])
+    assert (folder / 'scores.npz').is_file()
+    later = AppTest.from_file('app/app.py', default_timeout=120).run()
+    later.sidebar.radio(key='section').set_value('Discover related words').run()
+    later.button(key='dv_recovery_continue').click().run()
+    assert not later.exception and later.session_state['dv_step'] == 'Results'
+    assert not any(b.label == 'Rank the words' for b in later.button)
+    assert later.dataframe[0].value.Word.tolist() == ranked
+
+
+def test_a_saved_ranking_reads_back_as_it_was(tmp_path):
+    from semlens.discover.knn import Neighbours, Scoring
+    from semlens.discover.project import load_scoring, save_scoring
+    scoring = Scoring((('row', 3), ('usage', 'abc|0|5'), ('row', 7)), 2,
+                      Neighbours(np.array([[0.1, np.inf]], np.float32), np.array([[1, -1]], np.int32)), None)
+    save_scoring(tmp_path, scoring)
+    again = load_scoring(tmp_path)
+    assert again.keys == scoring.keys and again.k == 2 and again.threshold is None
+    assert np.array_equal(again.neighbours.distances, scoring.neighbours.distances) and np.array_equal(again.neighbours.seeds, scoring.neighbours.seeds)
+    assert load_scoring(tmp_path / 'missing') is None
+
+
+def test_steps_run_together_add_their_time_and_disk_but_not_their_memory():
+    from app.discover import _together
+    from semlens.resources import Cost
+    both = _together('Both', Cost('a', disk_bytes=10, memory_bytes=5, seconds=2, details=['one']),
+                     Cost('b', disk_bytes=1, memory_bytes=7, seconds=3, rough_time=False, details=['two']))
+    assert (both.disk_bytes, both.memory_bytes, both.seconds, both.details) == (11, 7, 5, ['one', 'two'])
+    assert _together('x', Cost('a', seconds=None), Cost('b', seconds=1)).seconds is None

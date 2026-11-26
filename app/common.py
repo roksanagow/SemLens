@@ -7,7 +7,7 @@ import numpy as np
 import streamlit as st
 import torch
 from semlens.embeddings import load_model, resolve_model_name
-from semlens.metrics import compute_sampled_metrics,SampledComparison
+from semlens.metrics import compute_sampled_metrics,SampledComparison,within_amd_baseline
 from semlens.reduction import reduce_to_2d
 from semlens.utils import palette_for
 
@@ -17,7 +17,7 @@ SAMPLING_HELP=('Balanced: use an equal number of usages from each compared corpu
                'repetitions but appears once in the plot. The score range shows sampling variability, not a confidence interval.')
 METRIC_NAMES={'apd':'Average pairwise distance','prt':'Prototype distance',
               'amd':'Average minimum distance','samd':'Symmetric average minimum distance'}
-# A and B are the usages of the two corpora; d is the distance chosen in the sidebar.
+# A and B are the usages of the two corpora; d is the vector distance chosen under Score settings.
 METRIC_FORMULAS={
     'apd':r'$\mathrm{APD}=\frac{1}{|A||B|}\sum_{a\in A}\sum_{b\in B}d(a,b)$',
     'prt':r'$\mathrm{PRT}=d(\bar a,\bar b)$, where $\bar a$ and $\bar b$ are the mean vectors of $A$ and $B$',
@@ -31,7 +31,30 @@ METRIC_NOTES={
     'amd':'For each usage, the distance to its closest counterpart in the other corpus; averaged within each direction, then across the two directions.',
     'samd':'A one-to-one matching: the closest unmatched pair is matched first, and so on. With unequal sizes, the surplus usages of the larger corpus stay unmatched.',
 }
-METRIC_HELP={metric:f'**{METRIC_NAMES[metric]} ({metric.upper()})**\n\n{METRIC_FORMULAS[metric]}\n\n{METRIC_NOTES[metric]}' for metric in METRIC_NAMES}
+# A short animation of each score on ten usages, five in each of two corpora (blue and orange),
+# drawn by hand: made by scripts/build_score_animations.py, shown at the top of the score's (?) help.
+METRIC_PICTURES={
+    'apd':'Every blue usage is compared with every orange one: APD is the average length of all these lines.',
+    'prt':'The crosses mark each corpus’s average usage, its prototype: PRT is the distance between the two crosses.',
+    'amd':'Green: each blue usage to its closest orange one. Red: each orange usage to its closest blue one. '
+          'AMD averages the lengths in each direction, then the two averages.',
+    'samd':'Each usage is paired with at most one usage of the other corpus, the closest pairs first, '
+           'so outlying usages are left with distant partners: SAMD is the average length of the pairs.',
+}
+
+
+def _picture(metric):
+    import base64
+    path=Path(__file__).resolve().parent/'data'/'score_help'/f'{metric}.gif'
+    if not path.is_file():
+        return ''
+    data=base64.b64encode(path.read_bytes()).decode()
+    return (f'![{METRIC_NAMES[metric]}, drawn on ten usages](data:image/gif;base64,{data})\n\n'
+            f'*In the drawing, blue and orange circles are the usages of two corpora.* {METRIC_PICTURES[metric]}\n\n')
+
+
+METRIC_HELP={metric:f'**{METRIC_NAMES[metric]} ({metric.upper()})**\n\n{_picture(metric)}{METRIC_FORMULAS[metric]}\n\n{METRIC_NOTES[metric]}'
+             for metric in METRIC_NAMES}
 DIRECTIONAL_AMD_FORMULA=r'$\mathrm{AMD}_{A\to B}=\frac{1}{|A|}\sum_{a\in A}\min_{b\in B}d(a,b)$'
 PROJECTION_HELP=(
     'Every usage is a point in a space with hundreds of dimensions; each view below flattens that space to two. '
@@ -53,12 +76,13 @@ GLOSSARY=(
     '**Target word / whole sentence** · a usage represented by the embedding of the word itself, or by the average over the whole sentence, '
     'which also reflects the topic.\n\n'
     '**Distance** · how different two embeddings are: 0 for the same, larger for less alike. Cosine distance is the usual choice.\n\n'
-    '**Projection** · a two-dimensional picture of the embeddings (PCA, UMAP, t-SNE, LDA). Every picture loses information; '
-    'scores are always computed from the embeddings themselves.\n\n'
-    '**Definition space** · each usage described by its distance to each definition you write: which of your senses is it nearest?\n\n'
+    '**Map (projection)** · a two-dimensional picture of the embeddings: main directions of variation (PCA), neighbourhoods (UMAP, t-SNE), '
+    'or what separates the corpora (LDA). Every picture loses information; scores are always computed from the embeddings themselves.\n\n'
+    '**Usage map (full embeddings)** · the usages placed by everything the model gives them.\n\n'
+    '**Definitions map (definition space)** · each usage described by its distance to each definition you write: which of your senses is it nearest?\n\n'
     '**Change scores (APD, PRT, AMD, SAMD)** · single numbers for how far apart the usages of two corpora are. The (?) beside each gives its formula.\n\n'
     '**Nearest counterpart** · for a usage in one corpus, the most similar usage in another. A usage with no close counterpart may be a new or lost sense.\n\n'
-    '**Sense class** · a sense label you create and give to usages when annotating.\n\n'
+    '**Sense** · a label you name and give to usages when annotating: a sense of the word, or any other category you want to count.\n\n'
     '**Graded annotation** · an Annotation option: each sense of a usage also gets a rating, from 1 (barely) to the top of the scale (clearly). '
     'Another option lets one usage have several senses.\n\n'
     '**Different words** · with several forms, Data & Model asks whether they are forms of one word or different words to compare. '
@@ -67,6 +91,29 @@ GLOSSARY=(
     'It adds the **Over time** view and colouring by time.\n\n'
     '**Discover related words** · the other section (in the sidebar): ranks the words of your corpora by how close their usages are '
     'to seed words or seed usages.')
+
+
+ADVANCED_HELP=('Shows the settings most analyses can leave at their defaults: the language model, its layer, context window and batch size; '
+               'how scores sample usages and measure distance; UMAP and t-SNE settings; corpus order; pre-computed and saved word embeddings; '
+               'and Discover’s word filters, model, layer and scoring options. Display settings stay in the sidebar either way.')
+
+
+def model_name(model_id):
+    """A model's short name: the presets' own (XL-LEXEME), else the last part of its ID."""
+    from app.ui_data import MODEL_PRESETS
+    for label,preset in MODEL_PRESETS.items():
+        if preset and preset==model_id:
+            return label.split(' · ')[0]
+    return (model_id or 'unnamed model').rstrip('/').split('/')[-1]
+
+
+def layer_name(layer):
+    return 'final layer' if int(layer)==-1 else f'layer {int(layer)}'
+
+
+def advanced():
+    """Whether the Advanced options switch is on. Off, the hidden settings keep their remembered or default values."""
+    return bool(st.session_state.get('advanced_options'))
 
 
 def natural_sort_key(text):
@@ -117,6 +164,13 @@ def cached_comparison(a,b,labels,distance,mode,repetitions,seed):
     result=compute_sampled_metrics(torch.from_numpy(aa),torch.from_numpy(bb),ordered,distance=distance,
                                    mode=mode,repetitions=repetitions,seed=seed)
     return SampledComparison(result.scores,[(j,i) for i,j in result.draws]) if reverse else result
+
+
+@st.cache_data(show_spinner=False,max_entries=48)
+def cached_within_amd(a,b,labels,distance,mode,repetitions,seed):
+    """AMD within each of two corpora, on the very usages that the pair's scores sample: (within a, within b, their mean)."""
+    comparison=cached_comparison(a,b,labels,distance,mode,repetitions,seed)
+    return within_amd_baseline(torch.from_numpy(a),torch.from_numpy(b),comparison.draws,distance)
 
 
 @st.cache_data(show_spinner=False,max_entries=8)

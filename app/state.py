@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 import streamlit as st
 from app.annotation_store import reset_annotation_state, get_annotations, restore_annotations
+from semlens.timeline import year_order
 
 _DEFAULTS = {
     'target_word':'', 'target_word_data':None, 'embedded_usages':None,
@@ -60,7 +61,13 @@ def set_data(data, embedded=None, *, source='model', preserve_annotations=True):
     st.session_state.target_word_data=data
     st.session_state.target_word=data.word
     st.session_state.corpus_labels=data.corpus_labels
-    st.session_state.corpus_order=list(dict.fromkeys([c for c in previous_order if c in data.corpus_labels]+data.corpus_labels))
+    by_year=year_order(data.corpus_labels)
+    if by_year is not None:
+        # Corpora named by years are periods: in time order, and read as a chronology.
+        st.session_state.corpus_order=by_year
+        st.session_state.chronological=True
+    else:
+        st.session_state.corpus_order=list(dict.fromkeys([c for c in previous_order if c in data.corpus_labels]+data.corpus_labels))
     st.session_state.embedded_usages=embedded
     st.session_state.embeddings_source=source
     if embedded is not None:

@@ -133,11 +133,11 @@ class Sample:
             capped = sum(1 for n in counts.values() if cap and n > cap)
             rows.append({"Corpus": corpus,
                          "Contexts": sum(1 for x in self.contexts if x.corpus == corpus),
-                         "Word occurrences counted": int(self.settings.get("tokens", {}).get(corpus, 0)),
+                         "Running words counted": int(self.settings.get("tokens", {}).get(corpus, 0)),
                          "Words kept": len(counts),
-                         "Occurrences sampled": sampled,
+                         "Usages sampled": sampled,
                          "Words over the cap": capped,
-                         "Occurrences left out by the cap": int(sum(counts.values()) - sampled)})
+                         "Usages left out by the cap": int(sum(counts.values()) - sampled)})
         return pd.DataFrame(rows)
 
     # --- Saving -------------------------------------------------------------------------------------
@@ -173,7 +173,7 @@ def sample_occurrences(contexts: Sequence[Context], *, cap: int = 100, min_count
     from all of them, with a fixed ``seed``. A cap of 0 keeps every occurrence.
     """
     if cap < 0:
-        raise ValueError("The cap must be a positive number of occurrences per word, or 0 for all.")
+        raise ValueError("The cap must be a positive number of usages per word, or 0 for all.")
     cap = cap or 10**12
     stop = {w.casefold() for w in stop_words}
     keep = {w.casefold() for w in keep_words}

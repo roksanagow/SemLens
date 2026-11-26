@@ -232,6 +232,6 @@ def knn_cost(rows: int, seeds: int, dim: int, k: int, device: str):
     flops = 2.0 * rows * seeds * dim
     read = rows * dim * 2 / 1e9          # 16-bit vectors read from disk, at about 1 GB/s
     memory = rows * k * 8 + 8192 * (seeds + dim) * 4 * 3 + seeds * dim * 4
-    return Cost("Comparing every occurrence with the seeds", memory_bytes=memory,
+    return Cost("Comparing every usage with the seeds", memory_bytes=memory,
                 seconds=flops / ROUGH_FLOPS.get(device, ROUGH_FLOPS["cpu"]) + read, rough_time=True,
-                details=[f"{rows:,} occurrences × {seeds:,} seeds"])
+                details=[f"{rows:,} usages × {seeds:,} seeds"])

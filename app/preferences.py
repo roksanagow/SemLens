@@ -65,6 +65,10 @@ SAVED={
     'point_size':(9,_number(4,18)),
     'point_opacity':(0.8,_number(0.2,1.0,float)),
     'figure_format':('png',_one_of('png','svg')),
+    # The start page opens by itself only until it has been seen once.
+    'start_seen':(False,_flag),
+    'advanced_options':(False,_flag),
+    'annotation_guide_off':(False,_flag),
     # Embedding (Data & Model)
     'encoder_representation':('Target word',_one_of('Target word','Whole sentence')),
     'encoder_preset':(_first(MODEL_PRESETS),_one_of(*MODEL_PRESETS)),

@@ -162,6 +162,29 @@ def compute_sampled_metrics(a: Tensor, b: Tensor, corpus_labels=("corpus_1", "co
     return SampledComparison(pd.DataFrame(scores), draws)
 
 
+def within_amd(x: Tensor, distance: str = "cosine") -> float:
+    """AMD within one group, leaving each usage out: its distance to its closest *other* usage, averaged.
+
+    NaN with fewer than two usages.
+    """
+    if len(x) < 2:
+        return float("nan")
+    d = _pairwise_distance(x, x, distance).clone()
+    d.fill_diagonal_(float("inf"))
+    return d.min(1).values.mean().item()
+
+
+def within_amd_baseline(a: Tensor, b: Tensor, draws, distance: str = "cosine") -> tuple[float, float, float]:
+    """AMD within each of two groups, on the usages sampled in each draw and averaged over the draws, and the mean of the two.
+
+    The baseline for an AMD between the groups computed on the same draws: an AMD
+    near this is no larger than the variation inside each group.
+    """
+    in_a = float(np.mean([within_amd(a[i], distance) for i, _ in draws]))
+    in_b = float(np.mean([within_amd(b[j], distance) for _, j in draws]))
+    return in_a, in_b, (in_a + in_b) / 2
+
+
 def nearest_counterparts(a: Tensor, b: Tensor, distance="cosine") -> tuple[pd.DataFrame, pd.DataFrame]:
     """Return every usage's nearest counterpart in both directions, weakest first."""
     d = _pairwise_distance(a, b, distance)

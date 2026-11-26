@@ -2,8 +2,10 @@
 
 Each discovery is a folder: the sample and its vectors (see
 :mod:`.contextual`), ``discovery.json`` with the seeds, the marks and the
-settings, and ``seed_vectors.npz`` with the vectors of seed usages from
-outside the sample. Everything needed to continue exploring is in the folder.
+settings, ``seed_vectors.npz`` with the vectors of seed usages from outside
+the sample, and the last ranking (``scores.npz``, and ``background.npz`` when
+the background correction was used). Everything needed to continue exploring
+is in the folder, so a reopened discovery shows its ranking at once.
 """
 from __future__ import annotations
 
@@ -37,7 +39,7 @@ class Discovery:
     seed_usages: list[SeedUsage] = field(default_factory=list)
     marks: dict[int, bool] = field(default_factory=dict)        # sampled occurrence → fits the concept
     word_status: dict[str, str] = field(default_factory=dict)   # word → "accepted" or "rejected"
-    add_marked: bool | None = None                 # None until chosen: whether marks and accepted words become seeds
+    add_marked: bool | None = None                 # whether marks and accepted words join the seeds (None, as in older files: no)
     settings: dict = field(default_factory=dict)
     created: float = field(default_factory=time.time)
 
@@ -138,6 +140,62 @@ def save_seed_vectors(folder: str | Path, vectors: dict[str, np.ndarray]):
     np.savez(path, keys=np.array(keys), vectors=np.stack([vectors[k] for k in keys]).astype(np.float32))
 
 
+SCORES_FILE = "scores.npz"
+BACKGROUND_FILE = "background.npz"
+
+
+def _save_arrays(path: Path, **arrays):
+    fd, temp = tempfile.mkstemp(prefix=".saving-", suffix=".npz", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            np.savez(f, **arrays)
+        os.replace(temp, path)
+    finally:
+        if os.path.exists(temp):
+            os.unlink(temp)
+
+
+def save_scoring(folder: str | Path, scoring):
+    """Keep the last ranking's neighbours with the discovery, so that reopening it needs no new comparison."""
+    keys = json.dumps([[kind, int(value) if kind == "row" else str(value)] for kind, value in scoring.keys])
+    _save_arrays(Path(folder) / SCORES_FILE, distances=scoring.neighbours.distances, seeds=scoring.neighbours.seeds,
+                 k=np.array(scoring.k), threshold=np.array(np.nan if scoring.threshold is None else scoring.threshold),
+                 keys=np.array(keys))
+
+
+def load_scoring(folder: str | Path):
+    """The saved ranking, or None when there is none or it cannot be read."""
+    from .knn import Neighbours, Scoring
+    path = Path(folder) / SCORES_FILE
+    if not path.is_file():
+        return None
+    try:
+        with np.load(path, allow_pickle=False) as saved:
+            keys = tuple((kind, int(value) if kind == "row" else value) for kind, value in json.loads(saved["keys"].item()))
+            threshold = float(saved["threshold"])
+            return Scoring(keys, int(saved["k"]), Neighbours(saved["distances"], saved["seeds"]),
+                           None if np.isnan(threshold) else threshold)
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def save_background(folder: str | Path, k: int, neighbours):
+    _save_arrays(Path(folder) / BACKGROUND_FILE, distances=neighbours.distances, seeds=neighbours.seeds, k=np.array(k))
+
+
+def load_background(folder: str | Path):
+    """(k, neighbours) of the saved background comparison, or None."""
+    from .knn import Neighbours
+    path = Path(folder) / BACKGROUND_FILE
+    if not path.is_file():
+        return None
+    try:
+        with np.load(path, allow_pickle=False) as saved:
+            return int(saved["k"]), Neighbours(saved["distances"], saved["seeds"])
+    except (OSError, ValueError, KeyError):
+        return None
+
+
 # --- Hand-off to SemLens ----------------------------------------------------------------------------
 
 def _records(sample) -> list[CorpusSentence]:
@@ -155,7 +213,7 @@ def handoff_with_vectors(store: VectorStore, words, corpora=None):
     sample = store.sample
     rows = seed_rows(sample, words, corpora, store.valid)
     if not len(rows):
-        raise ValueError("None of these words has sampled occurrences in the chosen corpora.")
+        raise ValueError("None of these words has sampled usages in the chosen corpora.")
     usages = [UsageInstance(sample.text_of(r), words[0], *sample.span_of(r), sample.corpora[int(sample.corpus[r])],
                             f"discover-{int(sample.context[r])}") for r in rows]
     data = TargetWordData(words[0], usages, list(sample.corpora), words[1:])

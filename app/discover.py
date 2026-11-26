@@ -22,6 +22,7 @@ from semlens.corpus_store import CorpusCache,list_corpus_caches
 from semlens.data_loading import decode_text,validate_corpus_names
 from semlens.resources import Cost,assess,count_tokens,format_bytes,system_resources
 from semlens.utils import keyword_in_context
+from semlens.timeline import year_order
 from semlens.words import MAX_WORDS,entry_of
 from semlens.discover.vocabulary import cap_estimates,contexts_from_texts,count_occurrences,default_stop_words,sample_occurrences
 from semlens.discover.contextual import (DEFAULT_MODEL,VectorStore,contexts_from_cache,default_layer,embed_seed_usage_dict,
@@ -31,10 +32,12 @@ from semlens.discover.seeds import (distinct_seed_words,parse_entries,seed_keys,
                                     seed_usages_from_table,spelling_overlaps)
 from semlens.discover.static import build_spaces,recommended_method,static_cost,static_scores
 from semlens.discover.project import (DISCOVERY_FILE,Discovery,delete_discovery,folder_name,handoff_sentences,handoff_with_vectors,
-                                      list_discoveries,load_seed_vectors,save_seed_vectors,source_texts)
-from app.common import STORAGE,get_model
+                                      list_discoveries,load_background,load_scoring,load_seed_vectors,save_background,save_scoring,
+                                      save_seed_vectors,source_texts)
+from app.common import STORAGE,advanced,get_model
 from app.costs import cost_check,device_kind,model_profile,remember_speed
 from app.presentation import concordance_html,page_tabs,plot_chart,readable_table
+from app.autosave import latest_discovery,when
 
 DISCOVER_ROOT=STORAGE/'discover'
 STEPS=['Corpora','Seeds','Quick first pass','Sample & embed','Results']
@@ -76,10 +79,11 @@ GLOSSARY=(
     '**Seed** · a usage that defines what you are looking for: a usage of one of your seed words, or a sentence you supply.\n\n'
     '**Embedding** · the list of numbers a language model gives a usage. Similar usages get similar embeddings.\n\n'
     '**Distance** · how different two embeddings are (cosine distance): 0 for the same, larger for less alike.\n\n'
-    '**kNN-AMD** · how close a word is to the seeds: for each of its usages, the average distance to the *k* nearest seeds, '
+    '**Distance to the seeds (kNN-AMD)** · how close a word is to the seeds: for each of its usages, the average distance to the *k* nearest seeds, '
     'then the average over its usages. Lower is closer.\n\n'
     '**Near the concept** · the share of a word’s usages that are as close to the seeds as a typical seed is to the other seed words.\n\n'
-    '**Background correction** · subtracts each usage’s distance to usages in general, so that words close to everything (*lot*, *kind*) do not rank high.\n\n'
+    '**Discounting words close to everything (background correction)** · subtracts each usage’s distance to usages in general, '
+    'so that words close to everything (*lot*, *kind*) do not rank high.\n\n'
     '**Cap** · the most usages of a word sampled from each corpus, picked at random.\n\n'
     '**Target word / masked target** · a usage represented by the embedding of the word itself, or of the model’s mask token put in its place, '
     'which reflects only the context.\n\n'
@@ -119,16 +123,26 @@ def _activate(disc):
     st.session_state.dv_discovery=disc
     st.session_state.pop('_dv_store',None)
     st.session_state['_dv_seed_vectors']=load_seed_vectors(disc.folder)
-    st.session_state['dv_seed_words_input']=', '.join(disc.seed_words)
+    # The seed box may already be on screen in this run (the simple path, on the Seeds step):
+    # its text is set at the start of the next run, and read from here until then.
+    st.session_state['_dv_seed_text']=', '.join(disc.seed_words)
     st.session_state['dv_seed_usages']=list(disc.seed_usages)
     st.session_state['dv_seed_corpora']=disc.seed_corpora
     for key in ('_dv_scoring','_dv_background','_dv_scores'):
         st.session_state.pop(key,None)
+    # The last ranking, saved with the discovery: Results shows it at once while the seeds and k are unchanged.
+    scoring=load_scoring(disc.folder)
+    if scoring is not None:
+        st.session_state['_dv_scoring']=(str(disc.folder),scoring)
+    background=load_background(disc.folder)
+    if background is not None:
+        st.session_state['_dv_background']=(str(disc.folder),*background)
 
 
 def _seed_words():
+    text=st.session_state.get('_dv_seed_text',st.session_state.get('dv_seed_words_input',''))
     try:
-        return parse_entries(st.session_state.get('dv_seed_words_input',''))
+        return parse_entries(text)
     except ValueError:
         return []
 
@@ -194,7 +208,7 @@ def render_discover_sidebar():
             disc=None
     if disc is not None:
         st.write(f'**{disc.name}**')
-        st.caption(f'{len(store.sample):,} occurrences · {len(store.sample.words):,} words · {len(store.sample.corpora)} corpora')
+        st.caption(f'{len(store.sample):,} usages · {len(store.sample.words):,} words · {len(store.sample.corpora)} corpora')
         st.caption(f'{store.metadata.get("model_id","")} · layer {store.metadata.get("layer")}')
     elif _state('dv_contexts'):
         st.caption(f'{len(st.session_state.dv_contexts):,} contexts read from {len(_corpora())} corpora')
@@ -208,6 +222,8 @@ def keep_settings():
     Streamlit forgets a widget's value after a run that does not draw it, so
     without this a visit to Analyse a word would clear the seed words and settings.
     """
+    if '_dv_seed_text' in st.session_state:
+        st.session_state['dv_seed_words_input']=st.session_state.pop('_dv_seed_text')
     if st.session_state.pop('_dv_reset_name',False):
         st.session_state['dv_name']=_default_name()
     for key in list(st.session_state):
@@ -240,10 +256,12 @@ def render_discover():
         st.session_state.dv_step=pending
     # The steps on the first line, as the workspaces are in Analyse a word.
     step=page_tabs('Step',STEPS,'dv_step',format_func=lambda s:f'{STEPS.index(s)+1} · {s}')
-    st.header('Discover related words')
-    st.caption('Find the words used like a set of seed words or seed usages, in each of your corpora.')
+    _render_status(step)
     for kind,message in st.session_state.pop('_dv_notices',[]):
         getattr(st,kind)(message)
+    _render_recovery_offer()
+    st.header('Discover related words')
+    st.caption('Find the words used like a set of seed words or seed usages, in each of your corpora.')
     {'Corpora':_render_corpora,'Seeds':_render_seeds,'Quick first pass':_render_quick_pass,
      'Sample & embed':_render_embed,'Results':_render_results}[step]()
     following=STEPS[(STEPS.index(step)+1)%len(STEPS)]
@@ -254,6 +272,83 @@ def render_discover():
 
 def _notice(kind,message):
     st.session_state.setdefault('_dv_notices',[]).append((kind,message))
+
+
+def _render_status(step):
+    """Under the steps: corpora read · seeds · embedded · scored, and the next step."""
+    from app.guidance import _plural,status_line
+    disc=_discovery()
+    scoring=st.session_state.get('_dv_scoring')
+    scored=disc is not None and scoring is not None and scoring[0]==str(disc.folder)
+    corpora=len(_corpora())
+    read=disc is not None or bool(_state('dv_contexts'))
+    words,usages=_seed_words(),_seed_usages()
+    seeds=([_plural(len(words),'seed word')] if words else [])+([_plural(len(usages),'seed usage')] if usages else [])
+    named=f'{corpora} corpus' if corpora==1 else f'{corpora} corpora'
+    items=[(read,(named if disc is not None else f'{named} read') if read else 'corpora not read'),
+           (bool(seeds),', '.join(seeds) if seeds else 'no seeds'),
+           (disc is not None,f'embedded: “{disc.name}”' if disc is not None else 'not embedded'),
+           (scored,'scored' if scored else 'not scored')]
+    if not read:
+        following='choose the corpora and read them, below.' if step=='Corpora' else ('Read the corpora','Corpora')
+    elif not seeds:
+        following='give seed words, below.' if step=='Seeds' else ('Give the seeds','Seeds')
+    elif disc is None:
+        following='sample and embed the usages, below.' if step=='Sample & embed' else ('Sample & embed','Sample & embed')
+    elif not scored:
+        following='rank the words, below.' if step=='Results' else ('Rank the words','Results')
+    else:
+        following='read and mark usages, or open words in Analyse a word, below.' if step=='Results' else ('See the results','Results')
+    status_line(items,following,_go,'discover')
+
+
+def _reopen(folder):
+    try:
+        _activate(Discovery.load(folder))
+    except (OSError,ValueError,KeyError,TypeError) as exc:
+        _notice('error',f'The discovery could not be opened: {exc}')
+        return
+    st.session_state['_dv_recovery_dismissed']=True
+    _go('Results')
+
+
+def _dismiss_recovery():
+    st.session_state['_dv_recovery_dismissed']=True
+
+
+def _render_recovery_offer():
+    """Before anything is read in this session: offer the most recently changed discovery. Never automatic."""
+    if _discovery() is not None or _state('dv_contexts') or st.session_state.get('_dv_recovery_dismissed'):
+        return
+    if '_dv_recovery' not in st.session_state:
+        offer=latest_discovery(DISCOVER_ROOT)
+        if offer is not None:
+            try:
+                disc=Discovery.load(offer['folder'])
+                offer.update(marked=len(disc.marked_rows),accepted=len(disc.accepted_words),seed_words=disc.seed_words)
+            except (OSError,ValueError,KeyError,TypeError):
+                offer=None
+        st.session_state['_dv_recovery']=offer
+    offer=st.session_state['_dv_recovery']
+    if not offer:
+        return
+    with st.container(border=True,key='dv_recovery'):
+        st.markdown('**Continue where you left off?**')
+        with st.container(horizontal=True,vertical_alignment='center'):
+            parts=[f'“{offer["name"]}”',f'{offer["occurrences"]:,} usages in {len(offer["corpora"])} corpora']
+            if offer['seed_words']:
+                parts.append('seeds: '+', '.join(offer['seed_words'][:5])+('…' if len(offer['seed_words'])>5 else ''))
+            if offer['marked']:
+                parts.append(f'{offer["marked"]:,} usage{"s" if offer["marked"]!=1 else ""} marked')
+            if offer['accepted']:
+                parts.append(f'{offer["accepted"]:,} word{"s" if offer["accepted"]!=1 else ""} accepted')
+            parts.append(f'last changed {when(offer["changed"])}')
+            st.write(' · '.join(parts))
+            st.button('Continue',type='primary',on_click=_reopen,args=(offer['folder'],),key='dv_recovery_continue')
+        with st.container(horizontal=True,vertical_alignment='center'):
+            st.button('No, start afresh',type='tertiary',on_click=_dismiss_recovery,key='dv_recovery_dismiss')
+            st.caption('Every discovery is saved as you work, with its last ranking. Continuing opens its Results. '
+                       'Other discoveries open from Corpora → A saved discovery.',width='content')
 
 
 # --- 1 · Corpora ---------------------------------------------------------------------------------------
@@ -337,7 +432,7 @@ def _render_corpora():
         st.session_state.setdefault(f'dv_split_{source}',split_default)
         split=st.selectbox('Divide the text into contexts',list(divisions),format_func=divisions.get,
                            key=f'dv_split_{source}',
-                           help='Each occurrence is read inside its context. Sentences are the usual choice; paragraphs give the model more to go on but take longer.')
+                           help='Each usage is read inside its context. Sentences are the usual choice; paragraphs give the model more to go on but take longer.')
     restrict=st.text_input('Only contexts containing (optional)',key='dv_restrict',placeholder='For example: lockdown, social distanc*, echo chamber',
                            help='Keep only the contexts that contain at least one of these words or phrases; they need not be seed words. '
                                 'This makes everything after it quicker and keeps the search to the part of the corpora you care about. '
@@ -357,11 +452,13 @@ def _render_corpora():
                 if cache is None:
                     validate_corpus_names(list(texts))
                     contexts=contexts_from_texts(texts,split=split,restrict=restrict or None)
-                    order=list(texts)
+                    # Corpora named by years (1999, 1999–2003) are put in time order.
+                    order=year_order(list(texts)) or list(texts)
                 else:
                     opened=CorpusCache(cache)
                     contexts=contexts_from_cache(opened,restrict or None)
                     order=list(opened.info.get('corpus_order') or dict.fromkeys(c.corpus for c in contexts))
+                    order=year_order(order) or order
                 if not contexts:
                     raise ValueError('No context contains the words given under “Only contexts containing”.' if restrict else 'The corpora contain no text.')
                 counts=count_occurrences(contexts)
@@ -427,7 +524,7 @@ def _render_saved_discoveries():
         st.info('No saved discoveries yet. Each discovery is saved as soon as its sample is embedded.')
         return
     chosen=st.selectbox('Saved discovery',found,key='dv_saved_choice',
-                        format_func=lambda d:f"{d['name']} · {d['occurrences']:,} occurrences · {', '.join(d['corpora'])} · {d['model']}")
+                        format_func=lambda d:f"{d['name']} · {d['occurrences']:,} usages · {', '.join(d['corpora'])} · {d['model']}")
     c1,c2=st.columns([1,1])
     if c1.button('Open this discovery',type='primary'):
         try:
@@ -500,7 +597,7 @@ def _render_seeds():
             found=seed_rows(store.sample,[entry],valid=store.valid)
             counts=np.bincount(store.sample.corpus[found],minlength=len(corpora)) if len(found) else np.zeros(len(corpora),int)
             rows.append({'Seed word':entry,**{c:int(n) for c,n in zip(corpora,counts)},'Total':int(counts.sum())})
-        st.write('Sampled occurrences of each seed word')
+        st.write('Sampled usages of each seed word')
         readable_table(pd.DataFrame(rows))
         missing=[r['Seed word'] for r in rows if r['Total']==0]
         if missing:
@@ -510,23 +607,133 @@ def _render_seeds():
         with st.spinner('Counting the seed words in the corpora…'):
             table=_entry_counts(entries)
         if table is not None:
-            st.write('Occurrences of each seed word in the corpora')
+            st.write('Usages of each seed word in the corpora')
             readable_table(table)
             if (table['Total']==0).any():
                 st.warning('Not found in the corpora: '+', '.join(table.loc[table['Total']==0,'Seed word'])+'.')
     if corpora:
         current=st.session_state.get('dv_seed_corpora')
-        chosen=st.multiselect('Take seed occurrences from',corpora,default=[c for c in (current or corpora) if c in corpora],key='dv_seed_corpora_input',
+        chosen=st.multiselect('Take seed usages from',corpora,default=[c for c in (current or corpora) if c in corpora],key='dv_seed_corpora_input',
                               help='All corpora by default. Choose one corpus to ask which words in the others are used like the seed words are used in it, '
                                    'for example the words that did the job of a modern term in older texts.')
         value=None if not chosen or len(chosen)==len(corpora) else chosen
         if not chosen:
-            st.caption('No corpus chosen: seed occurrences are taken from every corpus.')
+            st.caption('No corpus chosen: seed usages are taken from every corpus.')
         if value!=current:
             st.session_state.dv_seed_corpora=value
             _save_seeds()
     _render_seed_usages()
     _seed_advice(entries,_seed_usages())
+    _render_quick_path()
+
+
+def _render_quick_path():
+    """Sample, embed and rank in one go, with step 4's remembered settings, once the cost is shown."""
+    contexts=_state('dv_contexts')
+    if not contexts or _discovery() is not None or not (_seed_words() or _seed_usages()):
+        return
+    state=st.session_state
+    try:
+        cap=_parse_cap(state.dv_cap)
+    except ValueError:
+        cap=100
+    min_count,min_length,stop,keep=_filters()
+    source=state.get('dv_source',{})
+    cache=_cache_info(source)
+    if cache is not None:
+        model=cache['model']
+        model_id,hidden,layer,representation=model.get('model_id',''),int(model.get('dimension',768)),model.get('layer'),'word'
+        max_length,batch_size=int(model.get('max_length',256)),16
+        described=f'reuses the embeddings of the saved collection ({model_id}, layer {layer})'
+    else:
+        model_id,hidden,layers,layer,representation,max_length,batch_size=_remembered_model()
+        described=f'embeds them with {_model_line(model_id,layer,layers,representation)}'
+    estimates=_cached(('caps',(cap,),min_count,min_length,tuple(sorted(stop)),tuple(sorted(keep)),None),
+                      lambda:cap_estimates(state.dv_counts,[cap],min_count=min_count,min_length=min_length,stop_words=stop,keep_words=keep))
+    usages=int(estimates.occurrences[0])
+    st.divider()
+    with st.container(border=True,key='dv_quick_path'):
+        st.markdown('**The simple path: find related words with the default settings**')
+        st.caption(f'In one go, SemLens samples {"every usage" if not cap else f"up to {cap:,} usages"} of each word in each corpus '
+                   f'(about {usages:,} in all), {described}, and ranks the words by how close they are to the seeds. '
+                   'The discovery is saved as it is made. To choose which words are embedded or the settings, or to see a quick map of the words '
+                   'first, use steps 3 and 4 instead.')
+        texts=[c.text for c in contexts]
+        disk=usages*hidden*2+sum(len(t.encode()) for t in texts)*1.2+usages*40
+        if cache is not None:
+            cost=Cost('Reusing embeddings from the saved collection',disk_bytes=disk,memory_bytes=0,seconds=usages/20000,rough_time=True,
+                      details=[f'about {usages:,} usages'])
+        else:
+            from app.ui_data import _model_cost
+            if representation=='slot':
+                texts=(texts*(-(-usages//max(1,len(texts)))))[:usages]
+            cost=_model_cost('Sampling, embedding and ranking',model_id,texts,0,layer,max_length,batch_size,disk_bytes=disk)
+        # Ranking compares every sampled usage with every seed: the seed words' usages (up to the cap) and the seed usages.
+        ranking=knn_cost(usages,max(1,_seed_estimate(cap)),hidden,int(state.dv_k),device_kind())
+        if cost is None:
+            st.caption('The cost of embedding could not be estimated: the model could not be looked up. '
+                       'Check the internet connection for a first download.')
+            allowed=cost_check(ranking,'dv_quick_rank',remedy='Use steps 3 and 4: a lower cap, or fewer seed words.')
+        else:
+            # The ranking's own detail already gives the number of usages.
+            cost=_together('Sampling, embedding and ranking',cost,ranking)
+            allowed=cost_check(cost,'dv_quick',remedy='Use steps 3 and 4: a lower cap, a shortlist from the quick first pass, or fewer corpora.')
+        if st.button('Find related words',type='primary',disabled=not allowed,key='dv_quick_go'):
+            try:
+                _run_quick_path(contexts,cap,min_count,min_length,stop,keep,model_id,layer,representation,max_length,batch_size,
+                                cache is not None,source)
+                _go('Results')
+                st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
+
+
+def _seed_estimate(cap):
+    """About how many seeds the sample will hold: each seed word's usages, up to the cap in each corpus, and the seed usages."""
+    table=_entry_counts(_seed_words())
+    corpora=st.session_state.get('dv_seed_corpora') or st.session_state.get('dv_corpora',[])
+    count=len(_seed_usages())
+    if table is not None:
+        for _,row in table.iterrows():
+            count+=sum(min(int(row[c]),cap) if cap else int(row[c]) for c in corpora if c in row)
+    return count
+
+
+def _together(action,*costs):
+    """Several steps run one after another: their disk space and times add up; memory is the largest of them."""
+    times=[c.seconds for c in costs]
+    return Cost(action,download_bytes=sum(c.download_bytes for c in costs),disk_bytes=sum(c.disk_bytes for c in costs),
+                memory_bytes=max(c.memory_bytes for c in costs),seconds=None if None in times else sum(times),
+                rough_time=any(c.rough_time for c in costs),details=[d for c in costs for d in c.details])
+
+
+def _run_quick_path(contexts,cap,min_count,min_length,stop,keep,model_id,layer,representation,max_length,batch_size,reuse,source):
+    with st.spinner('Sampling usages…'):
+        sample=sample_occurrences(contexts,cap=cap,min_count=min_count,stop_words=stop,keep_words=keep,min_length=min_length,
+                                  corpora=st.session_state.dv_corpora)
+    if not len(sample):
+        raise ValueError('No word passes the filters. Lower the minimum number of usages in step 4.')
+    name=(st.session_state.get('dv_name') or '').strip() or _default_name()
+    try:
+        folder=DISCOVER_ROOT/folder_name(name)
+    except ValueError:
+        name=_default_name()
+        folder=DISCOVER_ROOT/folder_name(name)
+    if folder.exists():
+        # Never replace a saved discovery without asking: take a fresh name.
+        name=_default_name()
+        folder=DISCOVER_ROOT/folder_name(name)
+    _embed(sample,folder,name,model_id,layer,representation,max_length,batch_size,reuse,source)
+    store=_store()
+    if any(u.key not in st.session_state.get('_dv_seed_vectors',{}) for u in _seed_usages()):
+        with st.spinner('Reading the seed usages…'):
+            failed=_embed_missing_seed_usages(store)
+        if failed:
+            st.session_state.dv_seed_usages=[u for u in _seed_usages() if u.key in st.session_state['_dv_seed_vectors']]
+            _save_seeds()
+    keys=_seed_keys(_discovery(),store)
+    if keys:
+        _score(store,keys,int(st.session_state.dv_k))
 
 
 def _seed_advice(entries,usages):
@@ -547,10 +754,10 @@ def _render_seed_usages():
     found,label=None,''
     if kind=='A table (CSV / TSV)':
         upload=st.file_uploader('Table of seed sentences',type=['csv','tsv'],key='dv_seed_table',
-                                help='A column **sentence**; optional **start** and **end** give the character position of the occurrence '
+                                help='A column **sentence**; optional **start** and **end** give the character position of the usage '
                                      '(from 0, end not included); an optional **corpus** column is kept.')
         forms=st.text_input('Seed word in these sentences',key='dv_seed_table_forms',placeholder='bubble, bubbles',
-                            help='Needed when the table has no start and end columns: every occurrence of these forms becomes a seed.')
+                            help='Needed when the table has no start and end columns: every usage of these forms becomes a seed.')
         if upload is not None and st.button('Add these usages'):
             try:
                 found=seed_usages_from_table(decode_text(upload.getvalue())[0],forms=parse_entries(forms),
@@ -584,7 +791,7 @@ def _render_seed_usages():
                 st.info('This analysis has no annotations.')
             else:
                 chosen=st.multiselect('Usages annotated with',senses,key=f'dv_seed_senses_{label}',
-                                      help='Every usage given any of these sense classes becomes a seed.')
+                                      help='Every usage given any of these senses becomes a seed.')
                 options=snapshot.get('annotation_options') or {}
                 minimum=None
                 if options.get('graded'):
@@ -654,20 +861,25 @@ def _render_quick_pass():
     if recommended=='ppmi':
         st.caption(f'The smallest corpus has {min(tokens.values()):,} running words. Below about a million, word2vec embeddings are noisy, '
                    'and PPMI + SVD is often steadier.')
-    with st.expander('Settings'):
-        c1,c2,c3=st.columns(3)
-        dimensions=int(c1.number_input('Dimensions',min_value=10,max_value=500,step=10,key='dv_static_dims'))
-        window=int(c2.number_input('Window (words each side)',min_value=1,max_value=20,key='dv_static_window'))
-        min_count=int(c3.number_input('Minimum occurrences',min_value=1,key='dv_static_min',
-                                      help='Words rarer than this in a corpus get no embedding there.'))
-        epochs,workers=10,1
-        if method=='word2vec':
-            c4,c5=st.columns(2)
-            epochs=int(c4.number_input('Passes over the text',min_value=1,max_value=50,key='dv_static_epochs'))
-            workers=int(c5.number_input('Processor cores',min_value=1,max_value=16,key='dv_static_workers',
-                                        help='More cores are faster, but results then vary slightly between runs. One core gives the same result every time.'))
-        k=int(st.number_input('Nearest seeds (k)',min_value=1,max_value=50,key='dv_static_k',
-                              help='Each word is scored by its average distance to this many of the nearest seed-word embeddings (one per seed word and corpus).'))
+    state=st.session_state
+    dimensions,window,min_count=int(state.dv_static_dims),int(state.dv_static_window),int(state.dv_static_min)
+    epochs,workers=(int(state.dv_static_epochs),int(state.dv_static_workers)) if method=='word2vec' else (10,1)
+    k=int(state.dv_static_k)
+    if advanced():
+        with st.expander('Settings'):
+            c1,c2,c3=st.columns(3)
+            dimensions=int(c1.number_input('Dimensions',min_value=10,max_value=500,step=10,key='dv_static_dims'))
+            window=int(c2.number_input('Window (words each side)',min_value=1,max_value=20,key='dv_static_window'))
+            min_count=int(c3.number_input('Minimum usages',min_value=1,key='dv_static_min',
+                                          help='Words rarer than this in a corpus get no embedding there.'))
+            epochs,workers=10,1
+            if method=='word2vec':
+                c4,c5=st.columns(2)
+                epochs=int(c4.number_input('Passes over the text',min_value=1,max_value=50,key='dv_static_epochs'))
+                workers=int(c5.number_input('Processor cores',min_value=1,max_value=16,key='dv_static_workers',
+                                            help='More cores are faster, but results then vary slightly between runs. One core gives the same result every time.'))
+            k=int(st.number_input('Nearest seeds (k)',min_value=1,max_value=50,key='dv_static_k',
+                                  help='Each word is scored by its average distance to this many of the nearest seed-word embeddings (one per seed word and corpus).'))
     costs=[static_cost(tokens[c],_vocabulary(c,min_count),method,dimensions=dimensions,window=window,epochs=epochs,workers=workers)
            for c in corpora]
     cost=Cost('Building static embeddings for every corpus',memory_bytes=max(c.memory_bytes for c in costs),seconds=sum(c.seconds for c in costs),
@@ -698,14 +910,15 @@ def _render_quick_pass():
     top=int(st.number_input('Words shown',min_value=10,max_value=1000,step=10,key='dv_static_top'))
     shown=scores[scores.corpus==view].sort_values('knn_amd').head(top)
     table=pd.DataFrame({'#':range(1,len(shown)+1),'Word':shown.word,'Distance to the seeds':shown.knn_amd.round(3),
-                        'Occurrences':shown.occurrences})
+                        'Usages':shown.occurrences})
     if view==ALL_CORPORA:
         table['Corpora']=shown.corpora.values
     st.dataframe(_styled(table),hide_index=True,width='stretch',
                  column_config={'Distance to the seeds':st.column_config.NumberColumn(format='%.3f',
                                     help='Average distance to the k nearest seed-word embeddings. Lower is closer. In All corpora: the average over the corpora the word occurs in.')})
     st.download_button('Download all scores (CSV)',scores.to_csv(index=False),file_name='quick_first_pass.csv',mime='text/csv')
-    with st.expander('Map of the words',key='dv_static_map',on_change='rerun') as panel:
+    # Open at first: the map is the more telling half of the quick pass.
+    with st.expander('Map of the words',key='dv_static_map',on_change='rerun',expanded=True) as panel:
         if panel.open:
             _static_word_map(result,scores,corpora,view,list(shown.word))
     st.divider()
@@ -746,6 +959,49 @@ def _model_choice():
     return model_id
 
 
+def _filters():
+    """Step 4's word filters as remembered: (minimum usages, minimum length, stop words, seed words always kept)."""
+    state=st.session_state
+    stop=(default_stop_words() if state.dv_stop else set())|{w.strip().casefold() for w in state.dv_extra_stop.split(',') if w.strip()}
+    seeds=[e for e in _seed_words() if not e.endswith('*')]
+    keep=set(w.casefold() for w in seeds)|{u.word.casefold() for u in _seed_usages()}
+    return int(state.dv_min_count),int(state.dv_min_length),stop,keep
+
+
+def _cache_info(source):
+    """The saved collection the corpora came from, when it holds word embeddings that can be reused."""
+    if not source.get('cache'):
+        return None
+    try:
+        info=CorpusCache(source['cache']).info
+    except Exception:
+        return None
+    return info if info.get('storage')=='tokens' else None
+
+
+def _remembered_model():
+    """Step 4's model as remembered: XLM-RoBERTa base, two thirds of the way up, target word, unless changed with Advanced options on.
+
+    Returns (model ID, dimensions, layers, layer, representation, context window, batch size).
+    """
+    state=st.session_state
+    model_id=MODELS.get(state.get('dv_model_preset'))
+    if model_id is None:
+        from app.ui_data import normalise_model_reference
+        model_id=normalise_model_reference(state.get('dv_model_other') or '') or DEFAULT_MODEL
+    profile=model_profile(model_id)
+    hidden=profile['hidden'] if profile else 768
+    layers=profile['layers'] if profile else 12
+    state.setdefault(f'dv_layer_{model_id}',min(layers,default_layer(layers)))
+    return (model_id,hidden,layers,int(state[f'dv_layer_{model_id}']),state.get('dv_representation') or 'word',
+            int(state.dv_max_length),int(state.dv_batch))
+
+
+def _model_line(model_id,layer,layers,representation):
+    name=next((label.split(' · ')[0] for label,preset in MODELS.items() if preset==model_id),model_id)
+    return f'{name}, layer {layer} of {layers}, '+('masked target' if representation=='slot' else 'target word')
+
+
 def _render_embed():
     contexts=_state('dv_contexts')
     if not contexts:
@@ -756,14 +1012,21 @@ def _render_embed():
         return
     st.caption('A random sample of each word’s usages in each corpus is embedded by a language model. '
                'The embeddings are saved, so the discovery can be reopened later without running the model again.')
-    c1,c2,c3=st.columns(3)
-    min_count=int(c1.number_input('Minimum occurrences in a corpus',min_value=1,key='dv_min_count',
-                                  help='Words rarer than this in a corpus are left out of it: a handful of usages says little about a word. Seed words are always kept.'))
-    min_length=int(c2.number_input('Minimum word length (letters)',min_value=1,max_value=10,key='dv_min_length'))
-    stop_on=c3.checkbox('Leave out English function words',key='dv_stop',
-                        help='the, of, and, which, …: about 300 words. They rarely carry a concept, and they make up about half of all running words.')
-    extra=st.text_input('Other words to leave out',key='dv_extra_stop',placeholder='said, mr, would',
-                        help='Separate them with commas.')
+    if advanced():
+        c1,c2,c3=st.columns(3)
+        min_count=int(c1.number_input('Minimum usages in a corpus',min_value=1,key='dv_min_count',
+                                      help='Words rarer than this in a corpus are left out of it: a handful of usages says little about a word. Seed words are always kept.'))
+        min_length=int(c2.number_input('Minimum word length (letters)',min_value=1,max_value=10,key='dv_min_length'))
+        stop_on=c3.checkbox('Leave out English function words',key='dv_stop',
+                            help='the, of, and, which, …: about 300 words. They rarely carry a concept, and they make up about half of all running words.')
+        extra=st.text_input('Other words to leave out',key='dv_extra_stop',placeholder='said, mr, would',
+                            help='Separate them with commas.')
+    else:
+        state=st.session_state
+        min_count,min_length,stop_on,extra=int(state.dv_min_count),int(state.dv_min_length),bool(state.dv_stop),state.dv_extra_stop
+        st.caption(f'Words with fewer than {min_count} usages in a corpus'+(', English function words' if stop_on else '')
+                   +' and words shorter than '+(f'{min_length} letters' if min_length>1 else '1 letter')
+                   +' are left out; seed words are always kept. Switch on **Advanced options** in the sidebar to change this.')
     stop=(default_stop_words() if stop_on else set())|{w.strip().casefold() for w in extra.split(',') if w.strip()}
     seeds=[e for e in _seed_words() if not e.endswith('*')]
     keep=set(w.casefold() for w in seeds)|{u.word.casefold() for u in _seed_usages()}
@@ -774,7 +1037,7 @@ def _render_embed():
         choice=st.radio('Words to sample',['shortlist','all'],key='dv_vocabulary',horizontal=True,
                         format_func={'shortlist':f'The {len(shortlist):,} words of the quick first pass, and the seeds','all':'Every word that passes the filters'}.get)
         only=shortlist if choice=='shortlist' else None
-    cap_text=st.text_input('Occurrences kept per word in each corpus',key='dv_cap',help=CAP_HELP)
+    cap_text=st.text_input('Usages kept per word in each corpus',key='dv_cap',help=CAP_HELP)
     try:
         cap=_parse_cap(cap_text)
     except ValueError as exc:
@@ -801,6 +1064,10 @@ def _render_embed():
         model_id=cache_info['model'].get('model_id','')
         hidden=int(cache_info['model'].get('dimension',768))
         layer,representation,max_length,batch_size=cache_info['model'].get('layer'),'word',int(cache_info['model'].get('max_length',256)),16
+    elif not advanced():
+        model_id,hidden,layers,layer,representation,max_length,batch_size=_remembered_model()
+        st.caption(f'Model: {_model_line(model_id,layer,layers,representation)}. '
+                   'To choose another model, layer or representation, switch on **Advanced options** in the sidebar.')
     else:
         model_id=_model_choice()
         profile=model_profile(model_id)
@@ -819,7 +1086,7 @@ def _render_embed():
                                      'per usage, so it is several times slower, and it tends to find words that fit the same grammatical frame.')
         with st.expander('Advanced'):
             a1,a2=st.columns(2)
-            max_length=int(a1.number_input('Tokens per context window',min_value=32,max_value=1024,step=32,key='dv_max_length'))
+            max_length=int(a1.number_input('Context window (tokens)',min_value=32,max_value=1024,step=32,key='dv_max_length'))
             batch_size=int(a2.number_input('Batch size',min_value=1,max_value=128,key='dv_batch',
                                            help='Contexts processed together. It affects speed and memory only, never the results.'))
     caps=list(dict.fromkeys(CAPS+[cap]))
@@ -827,11 +1094,12 @@ def _render_embed():
                       lambda:cap_estimates(st.session_state.dv_counts,caps,min_count=min_count,min_length=min_length,stop_words=stop,
                                            keep_words=keep,only_words=None if only is None else set(only)|keep))
     table=pd.DataFrame({'Cap':['all' if c==0 else f'{c:,}' for c in estimates.cap],'Words':estimates.words,
-                        'Occurrences to embed':estimates.occurrences,'Share of their occurrences':estimates.share,
+                        'Usages to embed':estimates.occurrences,'Share of their usages':estimates.share,
                         'Words over the cap':estimates.capped,'Disk space':[format_bytes(n*hidden*2) for n in estimates.occurrences]})
-    with st.expander('What different caps would mean',expanded=False):
-        st.dataframe(_styled(table),hide_index=True,width='stretch',
-                     column_config={'Share of their occurrences':st.column_config.NumberColumn(format='percent')})
+    if advanced():
+        with st.expander('What different caps would mean',expanded=False):
+            st.dataframe(_styled(table),hide_index=True,width='stretch',
+                         column_config={'Share of their usages':st.column_config.NumberColumn(format='percent')})
     _cap_warning(cap,min_count,min_length,stop,keep)
     st.session_state.setdefault('dv_name',_default_name())
     name=st.text_input('Name of this discovery',key='dv_name')
@@ -842,11 +1110,11 @@ def _render_embed():
     prepared=_state('dv_sample')
     if prepared is None or prepared[0]!=signature:
         if st.button('Prepare the sample',type='primary'):
-            with st.spinner('Sampling occurrences…'):
+            with st.spinner('Sampling usages…'):
                 sample=sample_occurrences(contexts,cap=cap,min_count=min_count,stop_words=stop,keep_words=keep,min_length=min_length,
                                           corpora=st.session_state.dv_corpora,only_words=None if only is None else set(only)|keep)
             if not len(sample):
-                st.error('No word passes the filters. Lower the minimum number of occurrences.')
+                st.error('No word passes the filters. Lower the minimum number of usages.')
                 return
             st.session_state.dv_sample=(signature,sample,sample.summary())
             st.rerun()
@@ -862,8 +1130,8 @@ def _render_embed():
     disk=len(sample)*hidden*2+sum(len(c.text.encode()) for c in sample.contexts)*1.2+len(sample)*40
     if reuse:
         cost=Cost('Reusing embeddings from the saved collection',disk_bytes=disk,memory_bytes=0,seconds=len(sample)/20000,rough_time=True,
-                  details=[f'{len(sample):,} occurrences'])
-        allowed=cost_check(cost,'dv_embed',remedy='Lower the cap, or raise the minimum number of occurrences.')
+                  details=[f'{len(sample):,} usages'])
+        allowed=cost_check(cost,'dv_embed',remedy='Lower the cap, or raise the minimum number of usages.')
     else:
         from app.ui_data import _model_cost,_offer_speed_trial
         texts=([sample.contexts[c].text for c in sample.contexts_to_encode()] if representation=='word'
@@ -873,8 +1141,8 @@ def _render_embed():
             st.caption('The cost could not be estimated: the model could not be looked up. Check its name, or the internet connection for a first download.')
             allowed=True
         else:
-            cost.details.append(f'{len(sample):,} occurrences'+(', one pass of the model for each' if representation=='slot' else ''))
-            allowed=cost_check(cost,'dv_embed',remedy='Lower the cap, raise the minimum number of occurrences, keep only contexts containing given words (step 1), '
+            cost.details.append(f'{len(sample):,} usages'+(', one pass of the model for each' if representation=='slot' else ''))
+            allowed=cost_check(cost,'dv_embed',remedy='Lower the cap, raise the minimum number of usages, keep only contexts containing given words (step 1), '
                                'use the shortlist of a quick first pass (step 3), or choose Target word instead of Masked target.')
             _offer_speed_trial(cost,model_id,texts[:200],layer,max_length,batch_size,'discover')
     replace=True
@@ -891,7 +1159,7 @@ def _render_embed():
 
 def _cap_warning(cap,min_count,min_length,stop,keep):
     if not cap:
-        st.caption('Every occurrence is kept: the commonest words will take most of the time and disk space.')
+        st.caption('Every usage is kept: the commonest words will take most of the time and disk space.')
         return
     counts=_cached(('over',cap,min_count,min_length,tuple(sorted(stop)),tuple(sorted(keep))),
                    lambda:[n for (c,w),n in st.session_state.dv_counts.items()
@@ -900,8 +1168,8 @@ def _cap_warning(cap,min_count,min_length,stop,keep):
         st.caption(f'No word occurs more than {cap:,} times in a corpus, so the cap leaves nothing out.')
         return
     typical=int(np.median(counts))
-    st.caption(f'{len(counts):,} words occur more than {cap:,} times in a corpus and are sampled. A word with {typical:,} occurrences (the middle of those) '
-               f'keeps {cap/typical:.0%} of them: a sense used in 1 in 100 of its occurrences appears about {cap/100:.1f} times in the sample, '
+    st.caption(f'{len(counts):,} words occur more than {cap:,} times in a corpus and are sampled. A word with {typical:,} usages (the middle of those) '
+               f'keeps {cap/typical:.0%} of them: a sense used in 1 in 100 of its usages appears about {cap/100:.1f} times in the sample, '
                'and may be missed. Raise the cap if rarer senses of frequent words matter.')
 
 
@@ -943,7 +1211,7 @@ def _embed(sample,folder,name,model_id,layer,representation,max_length,batch_siz
     st.session_state['_dv_reset_name']=True
     disc.save()
     _activate(disc)
-    _notice('success',f'Embedded {encoded:,} of {len(sample):,} occurrences and saved “{name}”.'
+    _notice('success',f'Embedded {encoded:,} of {len(sample):,} usages and saved “{name}”.'
             +(f' {len(sample)-encoded:,} could not be encoded and are left out.' if encoded<len(sample) else ''))
 
 
@@ -980,6 +1248,10 @@ def _score(store,keys,k):
     progress.empty()
     st.session_state['_dv_scoring']=(str(store.folder),scoring)
     st.session_state.pop('_dv_scores',None)
+    try:
+        save_scoring(store.folder,scoring)
+    except OSError:
+        pass  # a read-only folder: the ranking lasts for this session
 
 
 def _background(store,k):
@@ -989,9 +1261,13 @@ def _background(store,k):
     rows=background_rows(store.sample,store.valid,3000)
     own=np.full(len(store.sample),-1,dtype=np.int64)
     own[rows]=np.arange(len(rows))
-    with st.spinner('Comparing every occurrence with a random sample of usages…'):
+    with st.spinner('Comparing every usage with a random sample of usages…'):
         neighbours=nearest_seeds(StoreCandidates(store),store.normalised(rows),k,own_seed=own)
     st.session_state['_dv_background']=(str(store.folder),k,neighbours)
+    try:
+        save_background(store.folder,k,neighbours)
+    except OSError:
+        pass
     return neighbours
 
 
@@ -1003,7 +1279,7 @@ def _render_results():
     store=_store()
     sample=store.sample
     meta=store.metadata
-    st.caption(f'**{disc.name}** · {int(store.valid.sum()):,} occurrences of {len(sample.words):,} words in {len(sample.corpora)} corpora · '
+    st.caption(f'**{disc.name}** · {int(store.valid.sum()):,} usages of {len(sample.words):,} words in {len(sample.corpora)} corpora · '
                f'{meta.get("model_id","")}, layer {meta.get("layer")}, '+('masked target' if meta.get('discover_representation')=='slot' else 'target word')
                +(f' · from {disc.source}' if disc.source else ''))
     keys=_seed_keys(disc,store)
@@ -1015,21 +1291,25 @@ def _render_results():
     added=len(disc.marked_rows)+len(disc.accepted_words) if disc.add_marked else 0
     st.write(f'**{len(keys):,} seeds** from {len(words)} different word{"s" if len(words)!=1 else ""}'
              +(f', including what you marked' if added else ''))
-    c1,c2,c3=st.columns(3)
-    k=int(c1.number_input('Nearest seeds (k)',min_value=1,max_value=100,key='dv_k',
-                          help='Each occurrence is scored by its mean distance to this many of its nearest seeds. A small k lets a word rank high '
-                               'when it resembles a few seeds closely; a larger k asks it to resemble more of them.'))
-    corrected=c2.checkbox('Background correction',key='dv_background',
-                          help='Score each occurrence by its distance to the seeds minus its distance to usages in general, so that words close to everything '
-                               '(lot, kind, way) lose their advantage. Then “near the concept” means closer to the seeds than to usages in general. '
-                               'Recommended when the seeds come from one or two words.')
-    rank_by=c3.radio('Rank words by',['knn','near'],key='dv_rank_by',horizontal=True,
-                     format_func={'knn':'kNN-AMD','near':'Share near the concept'}.get,
-                     help='**kNN-AMD**: how close the word’s usages are, on average, to their nearest seeds.\n\n'
-                          '**Share near the concept**: how many of its usages are as close to the seeds as a typical seed is to the other seed words; '
-                          'finds words with one fitting sense among others.')
+    if not advanced():
+        k,corrected,rank_by=int(st.session_state.dv_k),bool(st.session_state.dv_background),st.session_state.get('dv_rank_by') or 'knn'
+    else:
+        c1,c2,c3=st.columns(3)
+        k=int(c1.number_input('Nearest seeds (k)',min_value=1,max_value=100,key='dv_k',
+                              help='Each usage is scored by its mean distance to this many of its nearest seeds. A small k lets a word rank high '
+                                   'when it resembles a few seeds closely; a larger k asks it to resemble more of them.'))
+        corrected=c2.checkbox('Discount words close to everything (background correction)',key='dv_background',
+                              help='Score each usage by its distance to the seeds minus its distance to usages in general, so that words close to everything '
+                                   '(lot, kind, way) lose their advantage. Then “near the concept” means closer to the seeds than to usages in general. '
+                                   'Recommended when the seeds come from one or two words.')
+        rank_by=c3.radio('Rank words by',['knn','near'],key='dv_rank_by',horizontal=True,
+                         format_func={'knn':'Closeness to the seeds (kNN-AMD)','near':'Share near the concept'}.get,
+                         help='**Closeness to the seeds** (kNN-AMD): how close the word’s usages are, on average, to their nearest seeds.\n\n'
+                              '**Share near the concept**: how many of its usages are as close to the seeds as a typical seed is to the other seed words; '
+                              'finds words with one fitting sense among others.')
     if len(words)<3 and not corrected:
-        st.caption('The seeds come from fewer than three words: words spelled like them may rank high. Try the background correction, or add seed words in step 2.')
+        st.caption('The seeds come from fewer than three words: words spelled like them may rank high. Add seed words in step 2, or try the background correction'
+                   +('.' if advanced() else ' (shown with Advanced options in the sidebar).'))
     scoring=st.session_state.get('_dv_scoring')
     current=scoring is not None and scoring[0]==str(store.folder) and scoring[1].keys==tuple(keys) and scoring[1].k==k
     if not current:
@@ -1037,7 +1317,7 @@ def _render_results():
                 and len(scoring[1].keys)<len(keys) and tuple(keys[:len(scoring[1].keys)])==scoring[1].keys)
         cost=knn_cost(len(sample),len(keys)-(len(scoring[1].keys) if prefix else 0),store.dim,k,device_kind())
         if scoring is None or scoring[0]!=str(store.folder):
-            label='Find related words'
+            label='Rank the words'
         elif prefix:
             label=f'Update the results with {len(keys)-len(scoring[1].keys):,} new seeds'
         elif scoring[1].keys==tuple(keys):
@@ -1126,7 +1406,7 @@ def _render_rankings(disc,store,per,pooled,seeds,rank_by,corrected,scoring):
         ranked=ranked[~ranked.word.isin(notes)]
     shown=ranked.head(top)
     status={'accepted':'✓ fits','rejected':'✗ does not fit'}
-    table=pd.DataFrame({'#':range(1,len(shown)+1),'Word':shown.word.values,'kNN-AMD':shown.knn_amd.values,
+    table=pd.DataFrame({'#':range(1,len(shown)+1),'Word':shown.word.values,'Distance to the seeds (kNN-AMD)':shown.knn_amd.values,
                         'Near the concept':shown.share_near.values,'Sampled':shown.sampled.values,'In the corpus':shown.occurrences.values,
                         'Spelling':[notes.get(w,'') for w in shown.word],'Your decision':[status.get(disc.word_status.get(w),'') for w in shown.word]})
     knn_help=('For each sampled usage, its average distance to the k nearest seeds minus its average distance to the k nearest usages in general; '
@@ -1135,27 +1415,65 @@ def _render_rankings(disc,store,per,pooled,seeds,rank_by,corrected,scoring):
     near_help=('Share of the word’s sampled usages closer to the seeds than to usages in general.' if corrected else
                f'Share of the word’s sampled usages at least as close to the seeds as a typical seed is to the other seed words (distance {scoring.threshold:.3f}).'
                if scoring.threshold is not None else 'Needs seeds from at least two different words, or the background correction.')
+    tabs=['Ranking','Map','Read usages','Save & open in SemLens']
+    if st.session_state.get('dv_results_view') not in tabs:
+        st.session_state['dv_results_view']=tabs[0]
+    # Only the open tab is computed.
+    ranking,mapped,reading,saving=st.tabs(tabs,key='dv_results_view',on_change='rerun')
+    words=list(shown.word)
+    with ranking:
+        if ranking.open:
+            _ranking_table(disc,sample,per,pooled,table,filtered,rank_by,min_sampled,corrected,scoring,knn_help,near_help)
+    with mapped:
+        if mapped.open:
+            _results_map(disc,store,per,words,scoring,corrected,view)
+    with reading:
+        if reading.open:
+            _render_inspect(disc,store,words,scoring,corrected)
+    with saving:
+        if saving.open:
+            _render_save(disc,per,pooled)
+            st.divider()
+            _render_handoff(disc,store,words)
+
+
+def _ranking_table(disc,sample,per,pooled,table,filtered,rank_by,min_sampled,corrected,scoring,knn_help,near_help):
     st.dataframe(_styled(table),hide_index=True,width='stretch',
-                 column_config={'kNN-AMD':st.column_config.NumberColumn(format='%.3f',help=knn_help),
+                 column_config={'Distance to the seeds (kNN-AMD)':st.column_config.NumberColumn(format='%.3f',help=knn_help),
                                 'Near the concept':st.column_config.NumberColumn(format='percent',help=near_help),
-                                'Sampled':st.column_config.NumberColumn(help='Occurrences of the word in the sample, in this corpus (all corpora: in total).'),
-                                'In the corpus':st.column_config.NumberColumn(help='All occurrences of the word, before the cap.'),
+                                'Sampled':st.column_config.NumberColumn(help='Usages of the word in the sample, in this corpus (all corpora: in total).'),
+                                'In the corpus':st.column_config.NumberColumn(help='All usages of the word, before the cap.'),
                                 'Spelling':st.column_config.TextColumn(width='medium',help='Shares a subword token with a seed word, so it may look alike because of its spelling.')})
     if not corrected and scoring.threshold is None:
         st.caption('“Near the concept” needs seeds from at least two different words: it asks whether a word’s usages are as close to the seeds '
                    'as the seed words are to each other. With one seed word, use the background correction instead.')
-    full=pd.concat([pooled,per],ignore_index=True)
-    st.download_button('Download every score (CSV)',full.to_csv(index=False),file_name=f'{folder_slug(disc)}_scores.csv',mime='text/csv')
+    st.caption('Read a word’s usages, and mark them, in **Read usages**; see the words and their usages on a map in **Map**.')
     if len(sample.corpora)>1:
         with st.expander('Across corpora: the top words in each corpus',expanded=True):
             _overview(_rank(filtered(pooled),rank_by).head(30).word.tolist(),per,sample.corpora,rank_by,min_sampled)
-    with st.expander('Map of the words and their usages',key='dv_results_map',on_change='rerun') as panel:
-        if panel.open:
-            _results_map(disc,store,per,list(shown.word),scoring,corrected,view)
-    st.divider()
-    _render_inspect(disc,store,list(shown.word),scoring,corrected)
-    st.divider()
-    _render_handoff(disc,store,list(shown.word))
+
+
+def _render_save(disc,per,pooled):
+    """Where the discovery is kept, and what can be downloaded."""
+    st.subheader('Saved as you work')
+    st.caption(f'“{disc.name}” is saved in {disc.folder}: its sample and embeddings, the seeds, your marks and your decisions about words. '
+               'Reopen it from Corpora → A saved discovery, including after restarting SemLens: the last ranking comes back with it.')
+    full=pd.concat([pooled,per],ignore_index=True)
+    sample=_store().sample
+    marked=[{'corpus':sample.corpora[int(sample.corpus[r])],'word':sample.word_of(r),'sentence':sample.text_of(r),
+             'start':sample.span_of(r)[0],'end':sample.span_of(r)[1],'fits':fits} for r,fits in disc.marks.items()]
+    decisions=[{'word':w,'decision':s} for w,s in disc.word_status.items()]
+    st.markdown('**Downloads**')
+    with st.container(horizontal=True):
+        st.download_button('Every score (CSV)',full.to_csv(index=False),file_name=f'{folder_slug(disc)}_scores.csv',mime='text/csv',
+                           help='One row per word and corpus (and for all corpora together): distance to the seeds (kNN-AMD), the share near the concept, '
+                                'and the numbers of usages.')
+        st.download_button(f'Marked usages (CSV){f" · {len(marked):,}" if marked else ""}',pd.DataFrame(marked).to_csv(index=False),
+                           file_name=f'{folder_slug(disc)}_marks.csv',mime='text/csv',disabled=not marked,
+                           help='Usable as seed usages in another discovery, or loaded in Analyse a word as a usage table.')
+        st.download_button(f'Word decisions (CSV){f" · {len(decisions):,}" if decisions else ""}',pd.DataFrame(decisions).to_csv(index=False),
+                           file_name=f'{folder_slug(disc)}_words.csv',mime='text/csv',disabled=not decisions,
+                           help='The words you marked as fitting the concept or not.')
 
 
 def folder_slug(disc):
@@ -1224,8 +1542,15 @@ def _set_status(disc,word,key):
     disc.save()
 
 
+def new_mark(before,fits,does_not_fit):
+    """A usage's mark from its two tick boxes: True (fits), False (does not fit) or None. With both ticked, the one just ticked wins."""
+    if fits and does_not_fit:
+        return False if before is True else True
+    return True if fits else False if does_not_fit else None
+
+
 def _set_add_marked(disc):
-    disc.add_marked=st.session_state.get('dv_add_marked')=='add'
+    disc.add_marked=bool(st.session_state.get('dv_add_marked'))
     disc.save()
 
 
@@ -1236,19 +1561,19 @@ def _render_inspect(disc,store,shown,scoring,corrected):
     options=list(dict.fromkeys(shown+disc.accepted_words))
     if not options:
         return
-    word=st.selectbox('Word',options,key='dv_inspect_word',help='A word from the ranking above, or one you accepted.')
+    word=st.selectbox('Word',options,key='dv_inspect_word',help='A word from the ranking (see Ranking), or one you accepted.')
     if word not in index:
         return
     key=f'dv_status_{word}'
     st.session_state[key]=disc.word_status.get(word,'undecided')
     st.segmented_control('This word',['undecided','accepted','rejected'],key=key,on_change=_set_status,args=(disc,word,key),
-                         format_func={'undecided':'Undecided','accepted':'Fits the concept','rejected':'Does not fit'}.get)
-    st.session_state['dv_add_marked']=None if disc.add_marked is None else ('add' if disc.add_marked else 'record')
-    st.radio('What marking does',['add','record'],key='dv_add_marked',index=None,on_change=_set_add_marked,args=(disc,),horizontal=True,
-             format_func={'add':'Add the usages I mark as fitting, and the words I accept, to the seeds','record':'Only record my marks'}.get,
-             help='Choose before marking. Added seeds sharpen the search toward your judgements: press Update the results to see the effect, '
-                  'which takes seconds because only the new seeds are compared. They can also pull the search away from the original seeds, '
-                  'so read the new top words with care. Marks are saved with the discovery either way, and this choice can be changed later.')
+                         format_func={'undecided':'Undecided','accepted':'✓ Fits the concept','rejected':'✗ Does not fit'}.get)
+    # Marks are recorded either way; whether they also join the seeds is a visible switch, off at first.
+    st.session_state['dv_add_marked']=bool(disc.add_marked)
+    st.toggle('Add the usages I mark as fitting, and the words I accept, to the seeds',key='dv_add_marked',on_change=_set_add_marked,args=(disc,),
+              help='Off: your marks and decisions are saved with the discovery, and the seeds stay as they are.\n\n'
+                   'On: they join the seeds. Press **Update the results** to see the effect; it takes seconds, because only the new seeds are compared. '
+                   'Added seeds sharpen the search toward your judgements, but can also pull it away from the original seeds, so read the new top words with care.')
     rows=np.flatnonzero((sample.word==index[word])&store.valid)
     distance=scoring.neighbours.knn_distance[rows]
     if corrected:
@@ -1267,9 +1592,8 @@ def _render_inspect(disc,store,shown,scoring,corrected):
     pages=max(1,-(-len(rows)//per_page))
     page=int(st.number_input('Page',min_value=1,max_value=pages,value=1,key=f'dv_page_{word}_{order}')) if pages>1 else 1
     chunk=slice((page-1)*per_page,page*per_page)
-    marks={True:'Yes',False:'No'}
-    unmarked='–'
-    frame=pd.DataFrame([{'Fits?':marks.get(disc.marks.get(int(r)),unmarked),'Corpus':sample.corpora[int(sample.corpus[r])],
+    FITS,NOT='✓ Fits','✗ Does not fit'
+    frame=pd.DataFrame([{FITS:disc.marks.get(int(r)) is True,NOT:disc.marks.get(int(r)) is False,'Corpus':sample.corpora[int(sample.corpus[r])],
                          **dict(zip(('Before','Word','After'),_kwic(sample.text_of(r),sample.span_of(r)))),
                          'Distance':float(d),'Near':_is_near(d,threshold,corrected),
                          'Nearest seed':_seed_text(scoring.keys[int(scoring.neighbours.seeds[r,0])],sample,usages)
@@ -1278,24 +1602,23 @@ def _render_inspect(disc,store,shown,scoring,corrected):
     if frame.empty:
         st.caption('No usages in these corpora.')
         return
-    disabled=disc.add_marked is None
-    edited=st.data_editor(frame,hide_index=True,width='stretch',disabled=[c for c in frame.columns if c!='Fits?'] if not disabled else True,
+    edited=st.data_editor(frame,hide_index=True,width='stretch',disabled=[c for c in frame.columns if c not in (FITS,NOT)],
                           key=f'dv_marks_{folder_slug(disc)}_{word}_{order}_{page}_{"-".join(corpora)}',
                           column_config={'Before':st.column_config.TextColumn(width='medium'),'Word':st.column_config.TextColumn(width='small'),
                                          'After':st.column_config.TextColumn(width='medium'),
                                          'Distance':st.column_config.NumberColumn(format='%.3f',help='Average distance to the k nearest seeds'+(', minus the distance to usages in general.' if corrected else '.')),
                                          'Near':st.column_config.CheckboxColumn(help='Near the concept, by the threshold in the ranking.'),
                                          'Nearest seed':st.column_config.TextColumn(width='large',help='The seed closest to this usage, its word in brackets.'),
-                                         'Fits?':st.column_config.SelectboxColumn(options=[unmarked,'Yes','No'],width='small',pinned=True,required=True,
-                                                                                  help='Does this usage fit the concept? Double-click a cell to choose Yes or No; – clears the mark.')})
-    if disabled:
-        st.caption('Choose what marking does, above, to start marking usages.')
-        return
+                                         FITS:st.column_config.CheckboxColumn(FITS,width='small',pinned=True,
+                                                                              help='Tick a usage that fits the concept. Ticking the other column changes the mark; untick to clear it.'),
+                                         NOT:st.column_config.CheckboxColumn(NOT,width='small',pinned=True,
+                                                                             help='Tick a usage that does not fit the concept.')})
     changed=False
-    for r,value in zip(rows[chunk],edited['Fits?']):
+    for r,fits_now,not_now in zip(rows[chunk],edited[FITS],edited[NOT]):
         r=int(r)
-        new={'Yes':True,'No':False}.get(value)
-        if disc.marks.get(r)!=new:
+        before=disc.marks.get(r)
+        new=new_mark(before,bool(fits_now),bool(not_now))
+        if before!=new:
             if new is None:
                 disc.marks.pop(r,None)
             else:
@@ -1307,15 +1630,8 @@ def _render_inspect(disc,store,shown,scoring,corrected):
     fits=sum(1 for r in rows if disc.marks.get(int(r)) is True)
     no=sum(1 for r in rows if disc.marks.get(int(r)) is False)
     if fits or no:
-        st.caption(f'{word}: {fits} usages marked as fitting, {no} as not fitting'+(' · fitting usages join the seeds at the next update.' if disc.add_marked else '.'))
-    with st.expander('Download your marks'):
-        marked=[{'corpus':sample.corpora[int(sample.corpus[r])],'word':sample.word_of(r),'sentence':sample.text_of(r),
-                 'start':sample.span_of(r)[0],'end':sample.span_of(r)[1],'fits':fits_} for r,fits_ in disc.marks.items()]
-        decisions=[{'word':w,'decision':s} for w,s in disc.word_status.items()]
-        st.download_button('Marked usages (CSV)',pd.DataFrame(marked).to_csv(index=False),file_name=f'{folder_slug(disc)}_marks.csv',mime='text/csv',
-                           disabled=not marked,help='Usable as seed usages in another discovery, or loaded in Analyse a word as a usage table.')
-        st.download_button('Word decisions (CSV)',pd.DataFrame(decisions).to_csv(index=False),file_name=f'{folder_slug(disc)}_words.csv',mime='text/csv',
-                           disabled=not decisions)
+        st.caption(f'{word}: {fits} usages marked as fitting, {no} as not fitting'+(' · fitting usages join the seeds at the next update.' if disc.add_marked else '.')
+                   +' Download your marks in **Save & open in SemLens**.')
 
 
 # --- Maps --------------------------------------------------------------------------------------------
@@ -1531,21 +1847,66 @@ def _render_handoff(disc,store,shown):
                   help='**The sampled usages**: no waiting, but only up to each word’s cap, with Discover’s model and layer.\n\n'
                        '**Every usage**: all of them, embedded with the model you choose in Data & Model.'
                        +('\n\nMasked-target embeddings describe the context, not the word, so they are not used for the analysis.' if slot else ''))
-    st.button('Open in Analyse a word',type='primary',disabled=not words or not corpora,on_click=_hand_off,args=(store,words,corpora,mode))
+    st.button('Open in Analyse a word',type='primary',disabled=not words or not corpora,on_click=_request_hand_off,args=(store,words,corpora,mode))
     error=st.session_state.pop('_dv_handoff_error',None)
     if error:
         st.error(error)
+    if st.session_state.get('_dv_handoff_pending') and words and corpora:
+        from app.ui_data import describe_work,unsaved_work
+        work=unsaved_work(_first_word(words))
+        if not work:
+            st.session_state.pop('_dv_handoff_pending',None)
+            return
+        with st.container(border=True,key='dv_handoff_confirm'):
+            st.warning(f'Opening replaces the analysis of “{st.session_state.target_word_data.word}” open in Analyse a word. '
+                       f'Not saved yet: {describe_work(work)}.',icon=':material/warning:')
+            with st.container(horizontal=True):
+                can_save=st.session_state.get('embedded_usages') is not None
+                st.button('Save it, then open',type='primary',on_click=_save_then_hand_off,args=(store,words,corpora,mode),disabled=not can_save,
+                          help='Saves the open analysis in Saved analysis under its name, then opens these words.' if can_save else
+                               'An analysis can be saved once its usages are embedded.')
+                st.button('Open without saving',on_click=_hand_off,args=(store,words,corpora,mode))
+                st.button('Cancel',on_click=lambda:st.session_state.pop('_dv_handoff_pending',None),key='dv_handoff_cancel')
+
+
+def _first_word(words):
+    """The word the analysis is named after: the first without a wildcard."""
+    return sorted(words,key=lambda w:w.endswith('*'))[0]
+
+
+def _request_hand_off(store,words,corpora,mode):
+    """Open the words in Analyse a word, unless that would lose unsaved work there: then ask first."""
+    from app.ui_data import unsaved_work
+    if unsaved_work(_first_word(words)):
+        st.session_state['_dv_handoff_pending']=True
+        return
+    _hand_off(store,words,corpora,mode)
+
+
+def _save_then_hand_off(store,words,corpora,mode):
+    from app.ui_data import save_open_analysis
+    try:
+        path=save_open_analysis()
+    except (OSError,ValueError) as exc:
+        st.session_state['_dv_handoff_error']=f'The open analysis could not be saved: {exc}'
+        return
+    _hand_off(store,words,corpora,mode)
+    st.session_state.setdefault('_load_notices',[]).append(
+        ('success',f'Saved the earlier analysis as “{path.stem}”: reopen it from Data source → Saved analysis.'))
 
 
 def _hand_off(store,words,corpora,mode):
     """Load the chosen words into Analyse a word. Runs as a button callback, before the next run draws anything."""
     from app.state import set_data
+    st.session_state.pop('_dv_handoff_pending',None)
     words=sorted(words,key=lambda w:w.endswith('*'))
     try:
         if mode=='vectors':
             data,embedded=handoff_with_vectors(store,words,corpora)
             set_data(data,embedded,source='discover')
             workspace='Explore'
+            st.session_state.setdefault('_load_notices',[]).append(
+                ('success',f'Opened {len(data):,} usages of {", ".join(data.forms)} from Discover, with their embeddings. Next: explore them.'))
         else:
             data=handoff_sentences(store.sample,words,corpora)
             set_data(data,None)

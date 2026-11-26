@@ -270,7 +270,7 @@ def load_from_sentences(sentences: Sequence[str], word: str, corpus_labels: Sequ
         if not matches:
             raise ValueError(f"Row {i + 1}: no target form found in {sent[:100]!r}. Supply its position or add the form.")
         if not all_occurrences and len(matches) != 1:
-            raise ValueError(f"Row {i + 1}: multiple target occurrences. Supply start/end columns to identify the embedding's occurrence.")
+            raise ValueError(f"Row {i + 1}: the target occurs more than once (multiple occurrences). Supply start/end columns to identify the embedded usage.")
         for start, end in matches:
             usages.append(UsageInstance(sent, word, start, end, corpus, str(i)))
     return TargetWordData(word, usages, forms=list(forms or []))

@@ -315,8 +315,8 @@ def test_points_can_be_coloured_by_time_and_time_views_are_hidden_while_blind():
 def test_annotation_options_are_off_and_tucked_away_until_switched_on():
     at, data = timed_app()
     widget(at, 'button_group', 'Workspace').set_value('Annotation').run()
-    widget(at, 'text_input', 'New sense class').set_value('finance')
-    widget(at, 'button', 'Add class').click().run()
+    widget(at, 'text_input', 'New sense').set_value('finance')
+    widget(at, 'button', 'Add sense').click().run()
     assert any(e.label == 'Annotation options' for e in at.expander)
     assert widget(at, 'checkbox', 'Allow several senses per usage').value is False
     assert widget(at, 'checkbox', 'Graded annotation').value is False
@@ -623,18 +623,26 @@ def test_the_switch_is_global_and_groups_every_workspace_by_word():
     at, data = word_app()
     widget(at, 'button_group', 'Workspace').set_value('Explore').run()
     assert not at.exception
-    # A corpus pair chosen before switching must not linger among the words.
-    widget(at, 'selectbox', 'From corpus').set_value('new').run()
     assert widget(at, 'radio', 'Colour and compare by').value == 'corpus'
     assert set(groups_in(chart(at))) == {'old', 'new'}
+    at.session_state['explore_view'] = 'Scores'
+    at.run()
     assert any(s.value == 'Words by corpus' for s in at.subheader)
+    # A corpus pair chosen before switching must not linger among the words.
+    at.session_state['explore_view'] = 'Compare two corpora'
+    at.run()
+    widget(at, 'selectbox', 'From corpus').set_value('new').run()
     widget(at, 'radio', 'Colour and compare by').set_value('word').run()
     assert not at.exception
     assert at.session_state['group_by'] == 'word'
-    assert set(groups_in(chart(at))) == {'bubble', 'balloon'}
+    # The comparison tab is renamed and stays open.
+    assert at.session_state['explore_view'] == 'Compare two words'
     assert widget(at, 'selectbox', 'From word').options == ['bubble', 'balloon']
     assert widget(at, 'selectbox', 'From word').value == 'bubble' and widget(at, 'selectbox', 'To word').value == 'balloon'
     assert any(s.value == 'Compare words' for s in at.subheader)
+    at.session_state['explore_view'] = 'Map'
+    at.run()
+    assert set(groups_in(chart(at))) == {'bubble', 'balloon'}
     # The same choice in another workspace.
     widget(at, 'button_group', 'Workspace').set_value('Annotation').run()
     assert not at.exception
@@ -756,6 +764,7 @@ def test_annotation_export_has_a_word_column_when_words_are_compared():
 
 def test_switching_back_and_forth_always_offers_a_valid_pair():
     at, data = word_app(group_by='word')
+    at.session_state['explore_view'] = 'Compare two words'
     widget(at, 'button_group', 'Workspace').set_value('Explore').run()
     widget(at, 'selectbox', 'From word').set_value('balloon').run()
     assert widget(at, 'selectbox', 'From word').value == 'balloon'

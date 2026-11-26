@@ -23,7 +23,7 @@ from semlens.projects import project_bytes,load_project,save_project,project_fil
 from semlens.spaces import project_to_definition_space
 from app.state import set_data,reset_downstream_of
 from app.annotation_store import get_annotations,get_sense_classes,get_options,restore_annotations
-from app.common import ROOT,STORAGE,get_model,show_usage,ordered_labels
+from app.common import ROOT,STORAGE,get_model,show_usage,ordered_labels,advanced,natural_sort_key
 from semlens.resources import count_tokens,embedding_cost
 from app.costs import (MODEL_SIZES,_hub_model_size,_folder_weights,cost_check,known_speed,model_profile,
                        device_kind,measure_speed,remember_speed,model_is_downloaded)
@@ -32,11 +32,15 @@ from app.presentation import readable_table,concordance_html
 
 # Shipped inside the package so that an installed copy has it too; a test keeps it equal to testing_texts/.
 EXAMPLE_PATH=Path(__file__).resolve().parent/'data'/'bubble_usages.csv'
+# The example's XL-LEXEME embeddings (16-bit) and four definitions, so that it opens without a model download.
+# Made by scripts/build_example_embeddings.py; a test keeps them matched to the sentences.
+EXAMPLE_VECTORS=Path(__file__).resolve().parent/'data'/'bubble_embeddings.npz'
 EXAMPLE_SOURCE='Example: “bubble” in the Guardian, 1999–2026'
 EXAMPLE_DESCRIPTION=('350 sentences containing *bubble* or *bubbles*, sampled from Guardian and Observer articles: 50 from each of seven periods '
                      'between 1999 and 2026, one per article. The sample was not chosen for particular senses, so it mixes soap bubbles, '
                      'financial bubbles, social and political bubbles, and the support bubbles of the Covid years.\n\n'
-                     'Load it, then click **Embed loaded usages** below. Publication date, title and link come with each sentence and are returned in the annotation export.')
+                     'It comes already embedded with XL-LEXEME, and with four definitions, so it opens at once, without downloading the model. '
+                     'Publication date, title and link come with each sentence and are returned in the annotation export.')
 SAVED_SETTINGS=('definition_settings','chronological','corpus_order','distance_metric','sampling_mode','sampling_repetitions','sampling_seed',
                 'source_lines','source_split','palette_name','words_mode','word_mapping','group_by','words_shown','corpora_shown')
 MODEL_PRESETS={
@@ -103,7 +107,7 @@ GUIDE=(
     '2. **Explore**. Every usage becomes a point; usages the model finds similar sit close together. Scores summarise how far apart two corpora are, '
     'and you can read the sentences behind any score.\n'
     '3. **Definitions**. Write the senses you expect as short definitions and see which usages lie nearest each one.\n'
-    '4. **Annotation**. Label usages with your own sense classes, then read off how often each sense occurs in each corpus.\n\n'
+    '4. **Annotation**. Name the senses you want to tell apart, label usages with them, then read off how often each sense occurs in each corpus.\n\n'
     'The model’s similarity is evidence to inspect, not a verdict: the tool is built so that every number leads back to sentences you can read. '
     'To try it without your own data, choose **Example** under Data source. The **Glossary** in the sidebar explains the terms, and each **(?)** explains its control.')
 
@@ -170,7 +174,7 @@ def _parse_cap(text):
     if value in {'','all','0'}:
         return 0
     if not value.isdigit():
-        raise ValueError('Maximum occurrences per corpus must be “all” or a positive whole number, such as 500.')
+        raise ValueError('Maximum usages per corpus must be “all” or a positive whole number, such as 500.')
     return int(value)
 
 
@@ -188,7 +192,172 @@ def _cap(data,cap):
 
 def _set_loaded(data,embedded=None,source='model'):
     set_data(data,embedded,source=source)
-    _notify('success',f'Loaded {len(data):,} occurrences from {len(data.corpus_labels)} corpora.')
+    corpora=f'{len(data.corpus_labels)} corpus' if len(data.corpus_labels)==1 else f'{len(data.corpus_labels)} corpora'
+    if embedded is None:
+        _notify('success',f'Loaded {len(data):,} usages from {corpora}. Next: embed them, below.')
+    else:
+        _notify('success',f'Loaded {len(data):,} usages from {corpora}, with their embeddings. Next: explore them in Explore.')
+
+
+def _example_embeddings(data):
+    """The packaged embeddings and definitions of the example, or None when they do not match its sentences."""
+    try:
+        with np.load(EXAMPLE_VECTORS,allow_pickle=False) as saved:
+            ids=saved['usage_ids'].tolist()
+            vectors=saved['vectors'].astype(np.float32)
+            definitions=saved['definition_vectors'].astype(np.float32)
+            manifest=json.loads(saved['manifest'].item())
+    except (OSError,ValueError,KeyError):
+        return None
+    if ids!=[u.usage_id for u in data.usages] or len(definitions)!=len(manifest.get('definitions_formatted',[])):
+        return None
+    return vectors,definitions,manifest
+
+
+def load_example():
+    """Load the example, with its packaged embeddings and definitions when they match; True when they were included."""
+    data=load_from_csv(EXAMPLE_PATH,'bubble',forms=['bubbles'],time_col='date')
+    packaged=_example_embeddings(data)
+    if packaged is None:
+        _set_loaded(data)
+    else:
+        vectors,definitions,manifest=packaged
+        metadata={**manifest['embedding_metadata'],'stored_precision':'float16'}
+        embedded=embedded_usages_from_precomputed(data,torch.from_numpy(vectors),metadata=metadata)
+        set_data(data,embedded,source='model')
+        definition_vectors=torch.from_numpy(definitions)
+        st.session_state.definitions_raw=list(manifest['definitions_raw'])
+        st.session_state.definitions_formatted=list(manifest['definitions_formatted'])
+        st.session_state.definition_embeddings=definition_vectors
+        st.session_state.def_space_all=project_to_definition_space(embedded.embeddings,definition_vectors)
+        st.session_state.definition_settings=dict(manifest['definition_settings'])
+        _notify('success',f'Loaded the example: {len(data):,} usages from {len(data.corpus_labels)} periods, already embedded with XL-LEXEME, '
+                f'and {len(definitions)} definitions. Next: explore the usages in Explore.')
+    st.session_state.source_texts={}
+    st.session_state.saved_cache_path=None
+    st.session_state.pop('_corpus_stats',None)
+    st.session_state.chronological=True
+    return packaged is not None
+
+
+# --- Work that loading would replace ------------------------------------------------------------------
+
+def _work_stamp():
+    """The user's own work in the open analysis: what saving keeps and loading other usages can lose."""
+    data=st.session_state.get('target_word_data')
+    return json.dumps([id(data),{str(i):v for i,v in get_annotations().items()},get_sense_classes(),
+                       st.session_state.get('definitions_formatted') or []],sort_keys=True,default=str)
+
+
+def mark_saved():
+    st.session_state['_saved_work']=_work_stamp()
+
+
+def unsaved_work(word=None):
+    """Definitions, annotations and senses that loading other usages would lose, unless they are saved.
+
+    ``word`` is the word about to be loaded. Loading the open word again keeps the
+    annotations of the usages that are loaded again, and the senses; ``None``
+    replaces the whole analysis.
+    """
+    data=st.session_state.get('target_word_data')
+    if data is None:
+        return {}
+    work={}
+    if st.session_state.get('definitions_formatted'):
+        work['definitions']=len(st.session_state.definitions_formatted)
+    if word is None or word!=data.word:
+        if get_annotations():
+            work['annotated']=len(get_annotations())
+        if get_sense_classes():
+            work['senses']=len(get_sense_classes())
+    if work and st.session_state.get('_saved_work')==_work_stamp():
+        return {}
+    return work
+
+
+def describe_work(work):
+    """'4 definitions and the annotations of 120 usages (3 senses)'."""
+    parts=[]
+    if work.get('definitions'):
+        parts.append(f"{work['definitions']} definition{'s' if work['definitions']!=1 else ''}")
+    senses=work.get('senses',0)
+    senses_text=f"{senses} sense{'s' if senses!=1 else ''}"
+    if work.get('annotated'):
+        parts.append(f"the annotations of {work['annotated']:,} usage{'s' if work['annotated']!=1 else ''}"+(f' ({senses_text})' if senses else ''))
+    elif senses:
+        parts.append(senses_text)
+    return ' and '.join(parts)
+
+
+def _analysis_bytes():
+    settings={k:st.session_state[k] for k in SAVED_SETTINGS}
+    return project_bytes(st.session_state.target_word_data,st.session_state.embedded_usages,definitions=st.session_state.definitions_formatted,
+                         definition_embeddings=st.session_state.definition_embeddings,annotations=get_annotations(),
+                         sense_classes=get_sense_classes(),settings=settings,source_texts=st.session_state.source_texts,
+                         annotation_options=get_options())
+
+
+def save_open_analysis():
+    """Save the open analysis under its name in Saved analysis, numbering the name rather than replacing another file."""
+    data=st.session_state.target_word_data
+    name=str(st.session_state.get('_analysis_save_name') or data.word).strip() or data.word
+    folder=STORAGE/'projects'
+    path=folder/project_filename(name)
+    active=st.session_state.get('_active_analysis_path')
+    number=2
+    while path.exists() and str(path)!=active:
+        path=folder/project_filename(f'{name} {number}')
+        number+=1
+    save_project(path,_analysis_bytes())
+    st.session_state['_active_analysis_path']=str(path)
+    mark_saved()
+    return path
+
+
+def _cancel_replacing():
+    st.session_state.pop('_replace_pending',None)
+
+
+def confirm_replacing(clicked,key,word=None,action='Loading'):
+    """Whether a load may replace the open analysis: at once when no unsaved work would be lost, else once the user agrees.
+
+    Called with the load button's value, just after it, so that the question appears
+    under the button. ``word`` is the word about to be loaded (see :func:`unsaved_work`).
+    """
+    if clicked:
+        if not unsaved_work(word):
+            _cancel_replacing()
+            return True
+        st.session_state['_replace_pending']=key
+    if st.session_state.get('_replace_pending')!=key:
+        return False
+    work=unsaved_work(word)
+    if not work:
+        _cancel_replacing()
+        return False
+    data=st.session_state.target_word_data
+    kept=(f' The annotations of the usages of “{data.word}” that are loaded again are kept, with the senses.'
+          if word is not None and word==data.word and get_annotations() else '')
+    can_save=st.session_state.get('embedded_usages') is not None
+    with st.container(border=True,key=f'replace_{key}'):
+        st.warning(f'{action} replaces the open analysis of “{data.word}”. Not saved yet: {describe_work(work)}.{kept}',icon=':material/warning:')
+        with st.container(horizontal=True):
+            if st.button('Save it, then continue',type='primary',key=f'{key}_save_first',disabled=not can_save,
+                         help='Saves the open analysis in Saved analysis under its name, then continues.' if can_save else
+                              'An analysis can be saved once its usages are embedded.'):
+                try:
+                    path=save_open_analysis()
+                    _notify('success',f'Saved the earlier analysis as “{path.stem}”: reopen it from Data source → Saved analysis.')
+                    _cancel_replacing()
+                    return True
+                except (OSError,ValueError) as exc:
+                    st.error(str(exc))
+            if st.button('Continue without saving',key=f'{key}_discard'):
+                _cancel_replacing()
+                return True
+            st.button('Cancel',key=f'{key}_cancel',on_click=_cancel_replacing)
+    return False
 
 
 def _notify(kind,message):
@@ -200,7 +369,8 @@ def _finish_load():
     st.rerun()
 
 
-def _show_load_notices():
+def show_load_notices():
+    """What the last load did, and what to do next: shown once, under the tabs of whichever workspace opens."""
     for kind,message in st.session_state.pop('_load_notices',[]):
         getattr(st,kind)(message)
 
@@ -271,16 +441,19 @@ def _saved_file_controls(word_only):
     if notice and notice[0]==scope:
         getattr(st,notice[1])(notice[2])
     if not paths:
-        st.info('No word embeddings saved locally yet.' if word_only else 'No analyses saved locally yet.')
+        st.caption('No word embeddings saved on this computer yet.' if word_only else
+                   'No analyses saved on this computer yet. Once usages are embedded, **Save or export this analysis**, at the bottom of every page, saves one here.')
         return
     choice_key=f'saved_file_{scope}'
     if st.session_state.get(choice_key) not in paths:
         st.session_state[choice_key]=paths[0]
     choice=st.selectbox('Saved locally',paths,format_func=lambda p:p.stem,key=choice_key,on_change=_cancel_file_deletion)
-    if st.button('Open saved word embeddings' if word_only else 'Open saved analysis',type='primary'):
+    if confirm_replacing(st.button('Open saved word embeddings' if word_only else 'Open saved analysis',type='primary'),f'open_{scope}',action='Opening it'):
         try:
             _load_snapshot(load_project(choice),analysis_path=None if word_only else choice)
-            _notify('success','Word embeddings and sentences restored.' if word_only else 'Analysis restored. Edit it in the workspaces, then save your changes below.')
+            mark_saved()
+            _notify('success',f'Opened the word embeddings “{choice.stem}”, with their sentences. Next: explore them in Explore.' if word_only else
+                    f'Opened “{choice.stem}”. Changes are kept automatically as you work; save them into this file with **Save or export this analysis**, below.')
             _finish_load()
         except Exception as exc:
             st.error(str(exc))
@@ -300,15 +473,15 @@ def _saved_file_controls(word_only):
 
 
 def render_data():
-    st.header('Data & model')
+    st.header('Data & Model')
     st.caption('Choose a word, add corpora, then explore their usages together.')
     with st.expander('New here? How SemLens works',expanded=st.session_state.target_word_data is None):
         st.markdown(GUIDE)
-    _show_load_notices()
     sources=['Upload raw corpora (.txt)','Paste sentences','Upload CSV / TSV']
     if EXAMPLE_PATH.is_file():
         sources.append(EXAMPLE_SOURCE)
-    sources+=['Saved corpora','Saved word embeddings','Pre-computed embeddings','Saved analysis']
+    # Vectors saved for one word, or made with other code, are for those who know what they hold.
+    sources+=['Saved corpora']+(['Saved word embeddings','Pre-computed embeddings'] if advanced() else [])+['Saved analysis']
     # Remembered, so returning from another workspace does not reset the choice.
     remembered=st.session_state.get('_data_source')
     mode=st.selectbox('Data source',sources,index=sources.index(remembered) if remembered in sources else 0,
@@ -322,17 +495,13 @@ def render_data():
     corpus_input=None
     if mode==EXAMPLE_SOURCE:
         st.markdown(EXAMPLE_DESCRIPTION)
-        if st.button('Load the example',type='primary'):
+        if confirm_replacing(st.button('Load the example',type='primary'),'load_example',word='bubble'):
             try:
-                data=load_from_csv(EXAMPLE_PATH,'bubble',forms=['bubbles'],time_col='date')
-                _set_loaded(data)
-                st.session_state.source_texts={}
-                st.session_state.saved_cache_path=None
-                st.session_state.pop('_corpus_stats',None)
-                st.session_state.chronological=True
+                load_example()
                 _finish_load()
             except Exception as exc:
                 st.error(str(exc))
+        _loaded_summary()
         st.divider()
         _embedding_controls(None)
     elif mode in {'Saved analysis','Saved word embeddings'}:
@@ -341,13 +510,15 @@ def render_data():
             st.caption('Reopen vectors for a saved word and its forms, with the matching sentences and model/layer settings. To analyse other words, use Saved corpora.')
         _saved_file_controls(word_only)
         upload=st.file_uploader('Or open an exported embedding file' if word_only else 'Or open an exported analysis',type=['semlens'])
-        if upload is not None and st.button('Open uploaded file'):
+        if upload is not None and confirm_replacing(st.button('Open uploaded file'),'open_upload',action='Opening it'):
             try:
                 _load_snapshot(load_project(upload),analysis_name=None if word_only else Path(upload.name).stem)
-                _notify('success','Analysis restored.')
+                mark_saved()
+                _notify('success',f'Opened “{Path(upload.name).stem}” from the file. Next: explore it in Explore.')
                 _finish_load()
             except Exception as exc:
                 st.error(str(exc))
+        _loaded_summary()
     else:
         word=st.text_input('Target word',value=st.session_state.target_word,key=f'target_{mode}',
                            help='The word to study, in its dictionary form: run, bubble, Blase. Add its other forms below.').strip()
@@ -361,8 +532,8 @@ def render_data():
             typed_entries=[]
         render_words_question(typed_entries,st.session_state.target_word_data,'input')
         with st.expander('Usage selection options'):
-            cap_text=st.text_input('Maximum occurrences per corpus',value='all',key=f'cap_{mode}',
-                                   help='“all” uses every occurrence. A number such as 500 selects a reproducible random subset of that size from each corpus before embedding; plots show the retained usages.')
+            cap_text=st.text_input('Maximum usages per corpus',value='all',key=f'cap_{mode}',
+                                   help='“all” uses every usage. A number such as 500 selects a reproducible random subset of that size from each corpus before embedding; plots show the retained usages.')
             try:
                 _parse_cap(cap_text)
             except ValueError as exc:
@@ -418,7 +589,7 @@ def render_data():
                     names,texts=list(kept),dict(kept)
                     st.caption(f'Using the {len(kept)} texts loaded earlier in this session: {", ".join(kept)}. '
                                'Enter another word and load again, or upload files to replace them.')
-            if st.button('Load usages',type='primary'):
+            if confirm_replacing(st.button('Load usages',type='primary'),'load_texts',word=word):
                 try:
                     validate_corpus_names(names)
                     records=corpus_sentences(texts,split=split)
@@ -452,7 +623,7 @@ def render_data():
         elif mode=='Upload CSV / TSV':
             upload=st.file_uploader('Usage table',type=['csv','tsv'])
             st.caption('One row per sentence, with the columns **sentence** and **corpus**. Optional **start** and **end** give the character position of the '
-                       'target in the sentence (counting from 0, end not included) and select exactly that occurrence; without them every occurrence of the word is found. '
+                       'target in the sentence (counting from 0, end not included) and select exactly that usage; without them every usage of the word is found. '
                        'Any other columns, such as a date or a source, are kept and returned with your annotations. '
                        'With a time column (years, numbers or dates), the corpus column is optional: usages can be grouped into periods instead.')
             delimiter='\t' if upload is not None and upload.name.endswith('.tsv') else ','
@@ -486,7 +657,7 @@ def render_data():
                                                    help='Equal length: each period spans the same number of years. Equal numbers: each period holds about the same '
                                                         'number of usages, which keeps sample sizes even but makes periods of different lengths. '
                                                         'Dates are grouped by calendar year.')
-            if st.button('Load usages',type='primary',disabled=upload is None):
+            if confirm_replacing(st.button('Load usages',type='primary',disabled=upload is None),'load_table',word=word):
                 try:
                     data=load_from_csv(io.StringIO(text),word,delimiter=delimiter,forms=forms,match_case=match_case,
                                        time_col=time_col,periods=periods,period_method=period_method)
@@ -508,14 +679,14 @@ def render_data():
         elif mode=='Pre-computed embeddings':
             vectors=st.file_uploader('Embeddings',type=['pt','npy'])
             metadata=st.file_uploader('Matching sentence metadata',type=['csv','tsv'])
-            st.caption('One vector per metadata row. Include start/end when a sentence contains multiple matching occurrences.')
+            st.caption('One vector per metadata row. Include start/end when a sentence contains multiple matching usages.')
             model_id=st.text_input('Original model ID (needed for definitions)',key='import_model')
             col1,col2=st.columns(2)
             layer=int(col1.number_input('Saved layer (-1 = final output)',value=-1,step=1,key='import_layer',
                                         help='-1 is the final output, -2 the penultimate layer, and so on. 0 is the input embedding layer.'))
             representation=col2.selectbox('Saved representation',['word','sentence'],key='import_repr')
             revision=st.text_input('Model revision (optional)',key='import_revision')
-            if st.button('Load embeddings',type='primary',disabled=vectors is None or metadata is None):
+            if confirm_replacing(st.button('Load embeddings',type='primary',disabled=vectors is None or metadata is None),'load_precomputed',word=word):
                 try:
                     if vectors.name.endswith('.npy'):
                         embs=torch.from_numpy(np.load(io.BytesIO(vectors.getvalue()),allow_pickle=False))
@@ -548,7 +719,7 @@ def render_data():
                                     help='Word representations require a token cache. Sentence representations average the stored token vectors. '
                                          'Saved corpora are encoded once for every word, so XL-LEXEME target markers cannot be applied to them; '
                                          'embed loaded usages directly when you want marked targets.')
-            if st.button('Load word from saved corpora',type='primary',disabled=path is None):
+            if confirm_replacing(st.button('Load word from saved corpora',type='primary',disabled=path is None),'load_cache',word=word):
                 try:
                     cache=CorpusCache(path)
                     data,embedded=cache.select(word,forms,representation=representation,max_per_corpus=_parse_cap(cap_text),match_case=match_case)
@@ -562,6 +733,7 @@ def render_data():
                 except Exception as exc:
                     st.error(str(exc))
 
+        _loaded_summary()
         if mode not in {'Saved corpora','Pre-computed embeddings'}:
             st.divider()
             _embedding_controls(corpus_input if mode in {'Paste sentences','Upload raw corpora (.txt)'} else None)
@@ -571,29 +743,66 @@ def render_data():
         # These sources have no form box: ask about the loaded forms instead.
         render_words_question(data.forms,data,'loaded')
     if data is not None:
-        with st.expander('Review loaded occurrences',key='review_occurrences',on_change='rerun') as panel:
+        with st.expander('Word forms and concordance of the loaded usages',key='review_occurrences',on_change='rerun') as panel:
             if panel.open:
                 _review_occurrences(data)
-    if mode in {'Saved corpora','Saved word embeddings','Saved analysis','Pre-computed embeddings'} and st.session_state.embedded_usages is not None:
+        if advanced():
+            with st.expander('Corpus order'):
+                _corpus_order_form(data)
+    if (advanced() and mode in {'Saved corpora','Saved word embeddings','Saved analysis','Pre-computed embeddings'}
+            and st.session_state.embedded_usages is not None):
         with st.expander('Save word embeddings'):
             _save_word_embeddings()
 
 
-def _review_occurrences(data):
-    """Counts, relative frequencies, word forms and a concordance of what was loaded."""
+def _corpus_order_form(data):
+    """The order of the corpora in plots, tables and the time views."""
+    with st.form(f'order_form_{st.session_state.data_revision}',border=False):
+        chronology=st.checkbox('Corpora have chronological order',value=st.session_state.chronological,
+                               help='Adds the Change over time scores and reads each pair of corpora as earlier and later.')
+        order=st.multiselect('Corpus order',data.corpus_labels,default=st.session_state.corpus_order,
+                             help='Remove and re-add names to reorder them. Keep every corpus selected.')
+        apply=st.form_submit_button('Apply corpus order')
+        by_name=st.form_submit_button('Order by name',help='Sorts the corpora by name, with numbers in numeric order, so that names beginning with a year fall into time order.')
+        if by_name:
+            st.session_state.corpus_order=sorted(data.corpus_labels,key=natural_sort_key)
+            st.session_state.chronological=chronology
+            st.rerun()
+        if apply:
+            if len(order)==len(data.corpus_labels):
+                st.session_state.corpus_order=order
+                st.session_state.chronological=chronology
+                st.rerun()
+            else:
+                st.error('Include all corpora in the order.')
+
+
+def _loaded_summary():
+    """Just under the load button: what the load did, and how many usages each corpus has."""
+    show_load_notices()
+    data=st.session_state.target_word_data
+    if data is None:
+        return
     order=ordered_labels(data)
     stats=st.session_state.get('_corpus_stats') or {}
     rows=[]
     for corpus in order:
-        row={'Corpus':corpus,'Occurrences loaded':len(data.indices_for_corpus(corpus))}
+        row={'Corpus':corpus,'Usages':len(data.indices_for_corpus(corpus))}
         if corpus in stats and stats[corpus]['words']:
             found,words=stats[corpus]['found'],stats[corpus]['words']
             row.update({'Found in the corpus':found,'Corpus size (words)':words,'Per million words':round(found/words*1e6,1)})
         rows.append(row)
+    forms=f' and its forms ({", ".join(data.forms[1:])})' if len(data.forms)>1 else ''
+    st.markdown(f'**Loaded: {len(data):,} usages of “{data.word}”{forms}**')
     readable_table(pd.DataFrame(rows))
     if stats:
         st.caption('Per million words is the number found divided by the size of the corpus, so corpora of different sizes can be compared. '
-                   'Occurrences loaded is smaller than the number found when a maximum per corpus is set.')
+                   'Usages is smaller than the number found when a maximum per corpus is set (Usage selection options).')
+
+
+def _review_occurrences(data):
+    """Word forms and a concordance of what was loaded."""
+    order=ordered_labels(data)
     forms=pd.crosstab(pd.Series([u.matched_form.casefold() for u in data.usages],name='Form'),pd.Series(data.corpus_list,name='Corpus'))
     forms=forms.reindex(columns=order,fill_value=0)
     if len(forms)>1:
@@ -615,7 +824,7 @@ def _review_occurrences(data):
     elif sorting=='Word before the target':
         lines.sort(key=lambda line:[w.casefold() for w in reversed(re.findall(r'\w+',line[1])[-3:])])
     if not lines:
-        st.caption('No loaded occurrence matches.')
+        st.caption('No loaded usage matches.')
     else:
         per_page=100
         page=1
@@ -623,8 +832,8 @@ def _review_occurrences(data):
             page=int(st.number_input('Page',min_value=1,max_value=-(-len(lines)//per_page),value=1,key=f'kwic_page_{len(lines)}_{sorting}'))
         shown=lines[(page-1)*per_page:page*per_page]
         st.html(concordance_html([(data.usages[i].corpus,left,target,right) for i,left,target,right in shown]))
-        st.caption(f'{len(lines):,} of {len(data):,} occurrences'+(f', lines {(page-1)*per_page+1:,}–{(page-1)*per_page+len(shown):,}' if len(lines)>per_page else '')
-                   +'. The highlighted word is the exact occurrence that is represented. Hover a point in any plot to read its whole sentence.')
+        st.caption(f'{len(lines):,} of {len(data):,} usages'+(f', lines {(page-1)*per_page+1:,}–{(page-1)*per_page+len(shown):,}' if len(lines)>per_page else '')
+                   +'. The highlighted word is the exact usage that is represented. Hover a point in any plot to read its whole sentence.')
 
 
 def _save_word_embeddings():
@@ -635,8 +844,8 @@ def _save_word_embeddings():
         return
     meta=embedded.metadata
     representation=meta.get('representation','unspecified')
-    st.caption(f'Save exactly the {len(data):,} loaded occurrences of “{data.word}” and its selected forms. Includes their sentences and character positions. Selection caps apply; other corpus sentences are excluded.')
-    st.write(f"Representation: **{representation}** · Model: **{meta.get('model_id') or 'unspecified'}** · Layer: **{meta.get('layer','unspecified')}**"
+    st.caption(f'Save exactly the {len(data):,} loaded usages of “{data.word}” and its selected forms. Includes their sentences and character positions. Selection caps apply; other corpus sentences are excluded.')
+    st.write(f"Each usage read as the **{'whole sentence' if representation=='sentence' else 'target word'}** · Model: **{meta.get('model_id') or 'unspecified'}** · Layer: **{meta.get('layer','unspecified')}**"
              +(' · Target markers: **on**' if meta.get('target_markers') else ''))
     st.caption('To save another representation or layer, embed the usages with those settings first. Reopen these files through Saved word embeddings.')
     name=st.text_input('Word embedding file name',value=f'{data.word}_{representation}')
@@ -691,21 +900,14 @@ def _embedding_cost_check(data,model_id,layer,max_length,batch_size):
     if cost is None:
         st.caption('The cost could not be estimated: the model could not be looked up. Check its name, or the internet connection for a first download.')
         return True
-    allowed=cost_check(cost,'embed_usages',remedy='Set a maximum number of occurrences per corpus under Usage selection options, '
+    allowed=cost_check(cost,'embed_usages',remedy='Set a maximum number of usages per corpus under Usage selection options, '
                        'lower the inference batch size, or choose a smaller model.')
     _offer_speed_trial(cost,model_id,texts,layer,max_length,batch_size,'embed')
     return allowed
 
 
-def _embedding_controls(corpus_input):
-    st.subheader('Embeddings')
-    st.caption('The language model reads every loaded sentence and represents each usage as a list of numbers (an embedding). '
-               'Usages it treats as similar in meaning get similar numbers; everything in the other workspaces is built on them.')
-    representation=st.radio('Represent each usage by',['Target word','Whole sentence'],horizontal=True,key='encoder_representation',
-                            help='**Target word** (recommended): the model’s representation of the word itself, as coloured by its sentence. Best for word meaning.\n\n'
-                                 '**Whole sentence**: the average over every word of the sentence. It also reflects what the sentence is about, '
-                                 'so usages can differ because the topic differs.')
-    rep='word' if representation=='Target word' else 'sentence'
+def _encoder_settings():
+    """The model settings, under Advanced embedding settings: model, layer, context window, batch size and target markers."""
     with st.expander('Advanced embedding settings'):
         preset=st.selectbox('Language model',list(MODEL_PRESETS),key='encoder_preset',help=MODEL_HELP)
         model_id=MODEL_PRESETS[preset]
@@ -724,17 +926,49 @@ def _embedding_controls(corpus_input):
         layer=int(st.number_input('Layer (-1 = final output)',step=1,key='encoder_layer',
                                   help='Negative values count back from the top: -1 is the final output, -2 the penultimate layer, -3 the one before it. '
                                        '0 is the input embedding layer; 1 and higher count transformer layers from the bottom.'))
-        max_length=int(st.number_input('Tokens per context window',min_value=32,max_value=4096,step=32,key='encoder_max_length',
+        max_length=int(st.number_input('Context window (tokens)',min_value=32,max_value=4096,step=32,key='encoder_max_length',
                                        help='How much text the model reads at once, in subword tokens (roughly 0.75 words each). Longer contexts are read in overlapping windows, so nothing is cut off.'))
-        batch_size=int(st.number_input('Inference batch size',min_value=1,max_value=128,key='encoder_batch_size',
+        batch_size=int(st.number_input('Contexts read together (batch size)',min_value=1,max_value=128,key='encoder_batch_size',
                                        help='How many contexts are processed together. It affects speed and memory only, never the results. Lower it if the computer runs out of memory.'))
         use_markers=st.checkbox('Mark the target word when the model supports it',key='encoder_target_markers',
                                 help='XL-LEXEME was trained with the target wrapped in two special tokens, `<t>` and `</t>`. With this on, SemLens adds them '
                                      'around each target before encoding Target word representations, and around the word in each definition. '
                                      'Models without these tokens, and Whole sentence representations, are unaffected. '
                                      'Turn it off to encode the plain sentence, as earlier versions of SemLens did.')
+    return model_id,layer,max_length,batch_size,use_markers
+
+
+def _embedding_controls(corpus_input):
+    st.subheader('Embeddings')
+    st.caption('The language model reads every loaded sentence and represents each usage as a list of numbers (an embedding). '
+               'Usages it treats as similar in meaning get similar numbers; everything in the other workspaces is built on them.')
+    representation=st.radio('Represent each usage by',['Target word','Whole sentence'],horizontal=True,key='encoder_representation',
+                            help='**Target word** (recommended): the model’s representation of the word itself, as coloured by its sentence. Best for word meaning.\n\n'
+                                 '**Whole sentence**: the average over every word of the sentence. It also reflects what the sentence is about, '
+                                 'so usages can differ because the topic differs.')
+    rep='word' if representation=='Target word' else 'sentence'
+    if advanced():
+        model_id,layer,max_length,batch_size,use_markers=_encoder_settings()
+    else:
+        # The remembered settings (the defaults unless changed with Advanced options on).
+        state=st.session_state
+        model_id=MODEL_PRESETS.get(state.get('encoder_preset'))
+        if model_id is None:
+            model_id=normalise_model_reference(state.get('encoder_model') or '') or 'pierluigic/xl-lexeme'
+        layer,max_length,batch_size=int(state.encoder_layer),int(state.encoder_max_length),int(state.encoder_batch_size)
+        use_markers=bool(state.encoder_target_markers)
+        name=next((label.split(' · ')[0] for label,preset in MODEL_PRESETS.items() if preset==model_id),model_id)
+        st.caption(f'Model: {name}, {"final layer" if layer==-1 else f"layer {layer}"}. To choose another model or layer, '
+                   'switch on **Advanced options** in the sidebar.')
     data=st.session_state.target_word_data
     allowed=data is not None and _embedding_cost_check(data,model_id,layer,max_length,batch_size)
+    if st.session_state.get('embedded_usages') is not None and st.session_state.get('def_space_all') is not None:
+        count=len(st.session_state.definitions_formatted)
+        st.caption(f'Embedding again keeps the annotations, senses and the text of the {count} definition{"s" if count!=1 else ""}, '
+                   'but the definitions map is cleared: create it again in Definitions afterwards.')
+    if data is not None and not model_is_downloaded(model_id):
+        size=f' {_model_size_note(model_id)}' if model_id in MODEL_SIZES else ''
+        st.caption(f'Embedding downloads the model first, once; later runs use the downloaded copy.{size}')
     if st.button('Embed loaded usages',type='primary',disabled=not allowed):
         try:
             progress=st.progress(0.0)
@@ -754,12 +988,12 @@ def _embedding_controls(corpus_input):
             st.session_state.embeddings_source='model'
             progress.empty()
             marked=' with the target marked by <t>…</t>' if embedded.metadata.get('target_markers') else ''
-            st.success(f'Created {embedded.dim}-dimensional {rep} embeddings{marked}. Explore all corpora in the other tabs.')
+            st.success(f'Created {embedded.dim}-dimensional {rep} embeddings{marked}. Next: explore the usages in Explore.')
         except Exception as exc:
             st.error(str(exc))
     with st.expander('Prepare reusable corpus embeddings'):
         scope=st.radio('Embedding save scope',['Whole corpus','Current word only'],horizontal=True,
-                       help='Whole corpus allows changing the target later. Current word saves only the loaded occurrences and the representation already computed.')
+                       help='Whole corpus allows changing the target later. Current word saves only the loaded usages and the representation already computed.')
         if scope=='Current word only':
             _save_word_embeddings()
         elif corpus_input is None:
@@ -771,7 +1005,8 @@ def _embedding_controls(corpus_input):
             name=st.text_input('Saved corpus collection name',value='My corpora')
             storage_choice=st.selectbox('What to save',['Word and sentence representations','Sentence representations only'])
             storage='tokens' if storage_choice.startswith('Word') else 'sentences'
-            dtype=st.selectbox('Storage precision',['float32','float16'],help='float16 halves vector storage but rounds values. float32 preserves the computed precision.')
+            dtype=(st.selectbox('Storage precision',['float32','float16'],help='float16 halves vector storage but rounds values. float32 preserves the computed precision.')
+                   if advanced() else 'float32')
             signature=hashlib.sha256(json.dumps([texts,split,model_id,layer,max_length,storage,dtype],sort_keys=True).encode()).hexdigest()
             if st.button('Estimate storage'):
                 try:
@@ -827,10 +1062,7 @@ def render_save_analysis():
         name=st.text_input('Analysis name',key='_analysis_save_name')
         settings={k:st.session_state[k] for k in SAVED_SETTINGS}
         if st.button('Prepare analysis file'):
-            content=project_bytes(data,embedded,definitions=st.session_state.definitions_formatted,
-                definition_embeddings=st.session_state.definition_embeddings,annotations=get_annotations(),
-                sense_classes=get_sense_classes(),settings=settings,source_texts=st.session_state.source_texts,
-                annotation_options=get_options())
+            content=_analysis_bytes()
             st.session_state['_prepared_analysis']=(content,st.session_state.data_revision,
                 json.dumps([get_annotations(),get_sense_classes(),get_options(),settings,st.session_state.definitions_formatted],sort_keys=True))
         prepared=st.session_state.get('_prepared_analysis')
@@ -854,7 +1086,8 @@ def render_save_analysis():
                 try:
                     save_project(path,content)
                     st.session_state['_active_analysis_path']=str(path)
+                    mark_saved()
                     st.success('Saved. Reopen through Data source → Saved analysis.')
                 except OSError as exc:
                     st.error(str(exc))
-            st.download_button('Download analysis',data=content,file_name=filename,mime='application/zip')
+            st.download_button('Download analysis',data=content,file_name=filename,mime='application/zip',on_click=mark_saved)
